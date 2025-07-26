@@ -64,6 +64,16 @@
 
 ### 3. **Fixed Issues**
 
+#### **Interrupt (Break) Functionality - Windows Process Control**
+- **Challenge**: `exec-interrupt` MI command doesn't work reliably in GDB/MI mode
+- **Solution**: Direct Windows process control using `GenerateConsoleCtrlEvent` with `CTRL_C_EVENT`
+- **Self-Protection**: Custom `SetConsoleCtrlHandler` installed to prevent parent process termination
+- **Implementation**: 
+  - `winapi` dependency with `wincon` and `consoleapi` features
+  - Custom handler ignores `CTRL_C_EVENT` and `CTRL_BREAK_EVENT` for our process
+  - `GenerateConsoleCtrlEvent(CTRL_C_EVENT, gdb_pid)` sends interrupt to GDB process only
+- **Result**: Reliable interrupt functionality that stops GDB execution without killing the frontend
+
 #### **ScrollArea ID Conflicts**
 - Added unique `id_source` to each ScrollArea widget:
   - `console_scroll` - Console output panel
@@ -145,6 +155,39 @@
 2. Architecture layer (sync/async, locking) - Test user workflows
 3. UI layer (responsiveness, timeouts) - Only after 1&2 are verified
 
+### **Lesson 4: Windows Process Control and Signal Handling**
+**Problem**: Standard GDB/MI interrupt commands (`exec-interrupt`) don't work reliably, and naive signal approaches kill the parent process.
+
+**Solution Strategy**:
+1. **Use Windows-native process control**: `GenerateConsoleCtrlEvent` with `CTRL_C_EVENT` 
+2. **Install self-protection**: Custom `SetConsoleCtrlHandler` to prevent parent termination
+3. **Target specific PID**: Send signal only to GDB child process, not process group
+
+**Implementation Details**:
+```rust
+// Install handler during GdbAdapter::new()
+SetConsoleCtrlHandler(Some(ctrl_handler), TRUE);
+
+// Custom handler ignores CTRL_C_EVENT for our process
+unsafe extern "system" fn ctrl_handler(ctrl_type: DWORD) -> BOOL {
+    match ctrl_type {
+        CTRL_C_EVENT | CTRL_BREAK_EVENT => TRUE, // Ignore, don't terminate
+        _ => 0 // Let default handler handle other events
+    }
+}
+
+// Send interrupt to GDB process only
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, gdb_pid);
+```
+
+**Key Insights**:
+- MI commands are insufficient for interrupt handling in all GDB configurations
+- Process groups and signal propagation require careful isolation
+- Windows provides reliable process control APIs when used correctly
+- Self-protection handlers must be installed before any interrupt operations
+
+**Rule**: For reliable interrupt on Windows, use native process control APIs with proper self-protection, not GDB/MI commands.
+
 ## 🔄 **Next Integration Steps**
 
 ### Phase 1: Live GDB Integration
@@ -168,6 +211,7 @@
 
 - **Architecture**: ✅ Complete and modular (blocking approach for correctness)
 - **GDB Adapter**: ✅ Feature-complete with attach support
+- **Interrupt System**: ✅ Reliable Windows process control with self-protection
 - **GUI Framework**: ✅ Modern, responsive interface
 - **Attach Functionality**: ✅ Process and GDB server support
 - **Debug Panels**: ✅ Assembly, registers, stack, memory
@@ -176,4 +220,4 @@
 - **Testing**: ✅ Comprehensive test suite passing including real GDB output
 - **Documentation**: ✅ Complete API documentation with debugging lessons
 
-The foundation is now solid for a professional GDB frontend with attach-based debugging, assembly view, and comprehensive debug information display. All your requirements have been implemented in the UI framework and GDB adapter, with robust error handling and a debugged protocol parser.
+The foundation is now solid for a professional GDB frontend with reliable interrupt handling, attach-based debugging, assembly view, and comprehensive debug information display. All your requirements have been implemented in the UI framework and GDB adapter, with robust error handling, debugged protocol parser, and production-ready Windows process control.

@@ -50,6 +50,10 @@ impl GdbAdapter {
     pub fn new() -> Self {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         
+        // Install custom Ctrl+C handler on Windows to prevent self-termination
+        #[cfg(windows)]
+        Self::install_ctrl_handler();
+        
         GdbAdapter {
             process: None,
             stdin: None,
@@ -58,6 +62,42 @@ impl GdbAdapter {
             token_counter: AtomicU32::new(1),
             pending_commands: Arc::new(Mutex::new(HashMap::new())),
             is_running: Arc::new(Mutex::new(false)),
+        }
+    }
+    
+    #[cfg(windows)]
+    /// Install a custom Ctrl+C handler to prevent self-termination when sending CTRL_C_EVENT
+    fn install_ctrl_handler() {
+        unsafe {
+            use winapi::um::consoleapi::SetConsoleCtrlHandler;
+            use winapi::shared::minwindef::{BOOL, DWORD, TRUE};
+            
+            // Define our custom handler function
+            unsafe extern "system" fn ctrl_handler(ctrl_type: DWORD) -> BOOL {
+                use winapi::um::wincon::{CTRL_C_EVENT, CTRL_BREAK_EVENT};
+                
+                match ctrl_type {
+                    CTRL_C_EVENT => {
+                        log::debug!("CTRL_HANDLER: Ignoring CTRL_C_EVENT to prevent self-termination");
+                        TRUE // Return TRUE to indicate we handled it (don't terminate)
+                    }
+                    CTRL_BREAK_EVENT => {
+                        log::debug!("CTRL_HANDLER: Ignoring CTRL_BREAK_EVENT to prevent self-termination");
+                        TRUE // Return TRUE to indicate we handled it (don't terminate)
+                    }
+                    _ => {
+                        log::debug!("CTRL_HANDLER: Unhandled control event: {}", ctrl_type);
+                        0 // Let default handler handle other events
+                    }
+                }
+            }
+            
+            let result = SetConsoleCtrlHandler(Some(ctrl_handler), TRUE);
+            if result == 0 {
+                log::warn!("Failed to install custom Ctrl+C handler");
+            } else {
+                log::debug!("Successfully installed custom Ctrl+C handler");
+            }
         }
     }
     
@@ -308,9 +348,57 @@ impl GdbAdapter {
         self.send_command("target-detach").await
     }
 
-    /// Interrupt execution (break)
+    /// Interrupt execution (break) - sends CTRL_C_EVENT to GDB process
     pub async fn interrupt(&mut self) -> Result<GdbResult> {
-        self.send_command("exec-interrupt").await
+        log::debug!("INTERRUPT: Sending CTRL_C_EVENT to GDB process");
+        
+        if !self.is_running() {
+            log::debug!("INTERRUPT: GDB not running");
+            return Err(GdbError::ProcessTerminated);
+        }
+        
+        if let Some(ref mut process) = self.process {
+            if let Some(pid) = process.id() {
+                log::debug!("INTERRUPT: Sending CTRL_C_EVENT to PID {}", pid);
+                
+                #[cfg(windows)]
+                {
+                    unsafe {
+                        use winapi::um::wincon::{GenerateConsoleCtrlEvent, CTRL_C_EVENT};
+                        
+                        let result = GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid);
+                        if result == 0 {
+                            log::error!("INTERRUPT: GenerateConsoleCtrlEvent failed");
+                            return Err(GdbError::CommunicationError("Failed to send Ctrl+C event".into()));
+                        } else {
+                            log::debug!("INTERRUPT: Successfully sent CTRL_C_EVENT");
+                        }
+                    }
+                }
+                
+                #[cfg(not(windows))]
+                {
+                    // On non-Windows systems, we could use SIGINT here
+                    log::warn!("INTERRUPT: GenerateConsoleCtrlEvent not available on this platform");
+                    return Err(GdbError::CommunicationError("Interrupt not supported on this platform".into()));
+                }
+                
+                // Return a synthetic success result since interrupt doesn't return a MI response
+                use crate::types::{GdbResult, ResultClass};
+                use std::collections::HashMap;
+                Ok(GdbResult {
+                    token: None,
+                    class: ResultClass::Done,
+                    results: HashMap::new(),
+                })
+            } else {
+                log::error!("INTERRUPT: Could not get process ID");
+                return Err(GdbError::CommunicationError("Could not get process ID".into()));
+            }
+        } else {
+            log::error!("INTERRUPT: No process handle available");
+            Err(GdbError::ProcessTerminated)
+        }
     }
 
     /// Set a breakpoint at the specified location
