@@ -46,8 +46,8 @@ async fn main() -> Result<()> {
     // Start GDB session
     adapter.start_session().await?;
     
-    // Attach to GDB server (e.g., gdbserver running on localhost:1234)
-    adapter.attach_to_gdbserver("localhost:1234").await?;
+    // Attach to GDB server (e.g., gdbserver running on localhost:1337)
+    adapter.attach_to_gdbserver("localhost:1337").await?;
     
     // Set breakpoints by address (useful when no symbols available)
     adapter.set_breakpoint_at_address("0x12345678").await?;

@@ -86,7 +86,7 @@ impl KatoriApp {
             is_debugging: false,
             is_attached: false,
             current_pid: None,
-            current_host_port: "localhost:1234".to_string(),
+            current_host_port: "localhost:1337".to_string(),
             attach_mode: AttachMode::GdbServer,
             console_output: "Welcome to Katori GDB Frontend\n".to_string(),
             error_message: String::new(),
