@@ -257,30 +257,13 @@ impl KatoriApp {
     
     fn refresh_debug_info(&mut self) {
         self.console_output.push_str("Refreshing debug information...\n");
-        
-        let adapter = self.gdb_adapter.clone();
-        tokio::spawn(async move {
-            let mut adapter = adapter.lock().await;
-            
-            // Get registers
-            if let Ok(_result) = adapter.get_registers().await {
-                // TODO: Parse and update registers in GUI
-            }
-            
-            // Get stack frames
-            if let Ok(_result) = adapter.get_stack_frames().await {
-                // TODO: Parse and update stack frames in GUI
-            }
-            
-            // Get assembly
-            if let Ok(_result) = adapter.disassemble_current(20).await {
-                // TODO: Parse and update assembly in GUI
-            }
-        });
+        self.auto_refresh_debug_info();
     }
     
     /// Process pending GDB events and update UI state
     fn process_gdb_events(&mut self) {
+        let mut should_refresh = false;
+        
         // Use try_lock to avoid blocking if the adapter is busy
         if let Ok(adapter) = self.gdb_adapter.try_lock() {
             // Try to get events without blocking
@@ -304,12 +287,69 @@ impl KatoriApp {
                         self.console_output.push_str(&format!("GDB Result: {:?}\n", result.class));
                     }
                     GdbEvent::Async(async_record) => {
-                        // Handle async events if needed
-                        self.console_output.push_str(&format!("GDB Async: {:?}\n", async_record.class));
+                        // Handle async events - check if we should auto-refresh
+                        match async_record.class {
+                            gdbadapter::AsyncClass::Stopped => {
+                                self.console_output.push_str("Target stopped - refreshing debug info\n");
+                                should_refresh = true;
+                            }
+                            gdbadapter::AsyncClass::Running => {
+                                self.console_output.push_str("Target running\n");
+                            }
+                            _ => {
+                                self.console_output.push_str(&format!("GDB Async: {:?}\n", async_record.class));
+                            }
+                        }
                     }
                 }
             }
         }
+        
+        // Auto-refresh debug info if target stopped
+        if should_refresh {
+            self.auto_refresh_debug_info();
+        }
+    }
+    
+    fn read_memory(&mut self) {
+        self.console_output.push_str(&format!("Reading {} bytes from {}\n", self.memory_size, self.memory_address));
+        
+        let address = self.memory_address.clone();
+        let size = self.memory_size;
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.read_memory(&address, size).await {
+                eprintln!("Failed to read memory: {}", e);
+            }
+        });
+    }
+    
+    /// Automatically fetch debug information when GDB is stopped
+    fn auto_refresh_debug_info(&mut self) {
+        if !self.is_debugging || !self.is_attached {
+            return;
+        }
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            
+            // Get registers
+            if let Ok(_result) = adapter.get_registers().await {
+                // TODO: Parse and update registers in GUI
+            }
+            
+            // Get stack frames
+            if let Ok(_result) = adapter.get_stack_frames().await {
+                // TODO: Parse and update stack frames in GUI
+            }
+            
+            // Get assembly around current PC
+            if let Ok(_result) = adapter.disassemble_current(20).await {
+                // TODO: Parse and update assembly in GUI
+            }
+        });
     }
 }
 
@@ -463,72 +503,105 @@ impl eframe::App for KatoriApp {
             });
         }
         
-        // Main content area with panels
+        // Main content area - Assembly in center with right sidebar
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Left panel - Assembly
-                if self.show_assembly {
-                    ui.vertical(|ui| {
-                        ui.heading("Assembly");
-                        egui::ScrollArea::vertical()
-                            .id_source("assembly_scroll")
-                            .show(ui, |ui| {
-                                if self.assembly_lines.is_empty() {
-                                    ui.label("No assembly data");
-                                } else {
-                                    for line in &self.assembly_lines {
-                                        ui.monospace(format!("{}: {}", line.address, line.instruction));
+                // Main assembly panel (takes most of the space)
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(ui.available_width() * 0.7, ui.available_height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        if self.show_assembly {
+                            ui.heading("Assembly");
+                            egui::ScrollArea::vertical()
+                                .id_source("assembly_scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    if self.assembly_lines.is_empty() {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.label("No assembly data available");
+                                        });
+                                    } else {
+                                        for line in &self.assembly_lines {
+                                            ui.monospace(format!("0x{}: {}", line.address, line.instruction));
+                                        }
                                     }
-                                }
+                                });
+                        } else {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("Assembly view disabled");
                             });
-                    });
-                    ui.separator();
-                }
+                        }
+                    }
+                );
                 
-                // Middle panel - Registers
-                if self.show_registers {
-                    ui.vertical(|ui| {
-                        ui.heading("Registers");
-                        egui::ScrollArea::vertical()
-                            .id_source("registers_scroll")
-                            .show(ui, |ui| {
-                                if self.registers.is_empty() {
-                                    ui.label("No register data");
-                                } else {
-                                    for reg in &self.registers {
-                                        ui.monospace(format!("{}: {}", reg.name, reg.value));
-                                    }
-                                }
-                            });
-                    });
-                    ui.separator();
-                }
+                ui.separator();
                 
-                // Right panel - Stack
-                if self.show_stack {
-                    ui.vertical(|ui| {
-                        ui.heading("Stack Frames");
-                        egui::ScrollArea::vertical()
-                            .id_source("stack_scroll")
-                            .show(ui, |ui| {
-                                if self.stack_frames.is_empty() {
-                                    ui.label("No stack data");
-                                } else {
-                                    for frame in &self.stack_frames {
-                                        let display = if let Some(func) = &frame.function {
-                                            format!("#{} {} @ {}", frame.level, func, frame.address)
-                                        } else {
-                                            format!("#{} @ {}", frame.level, frame.address)
-                                        };
-                                        ui.monospace(display);
-                                    }
+                // Right sidebar for registers and stack (takes remaining space)
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(ui.available_width(), ui.available_height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        // Registers panel (top half of sidebar)
+                        if self.show_registers {
+                            ui.allocate_ui_with_layout(
+                                egui::Vec2::new(ui.available_width(), ui.available_height() * 0.5),
+                                egui::Layout::top_down(egui::Align::LEFT),
+                                |ui| {
+                                    ui.heading("Registers");
+                                    egui::ScrollArea::vertical()
+                                        .id_source("registers_scroll")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            if self.registers.is_empty() {
+                                                ui.label("No register data");
+                                            } else {
+                                                for reg in &self.registers {
+                                                    ui.horizontal(|ui| {
+                                                        ui.monospace(format!("{:8}", reg.name));
+                                                        ui.monospace(&reg.value);
+                                                    });
+                                                }
+                                            }
+                                        });
                                 }
-                            });
-                    });
-                }
+                            );
+                        }
+                        
+                        ui.separator();
+                        
+                        // Stack frames panel (bottom half of sidebar)
+                        if self.show_stack {
+                            ui.allocate_ui_with_layout(
+                                egui::Vec2::new(ui.available_width(), ui.available_height()),
+                                egui::Layout::top_down(egui::Align::LEFT),
+                                |ui| {
+                                    ui.heading("Stack Frames");
+                                    egui::ScrollArea::vertical()
+                                        .id_source("stack_scroll")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            if self.stack_frames.is_empty() {
+                                                ui.label("No stack data");
+                                            } else {
+                                                for frame in &self.stack_frames {
+                                                    let display = if let Some(func) = &frame.function {
+                                                        format!("#{} {} @ 0x{}", frame.level, func, frame.address)
+                                                    } else {
+                                                        format!("#{} @ 0x{}", frame.level, frame.address)
+                                                    };
+                                                    ui.monospace(display);
+                                                }
+                                            }
+                                        });
+                                }
+                            );
+                        }
+                    }
+                );
             });
             
-            // Memory viewer (if enabled)
+            // Memory viewer (if enabled) - separate section at the bottom
             if self.show_memory {
                 ui.separator();
                 ui.heading("Memory Viewer");
@@ -538,8 +611,7 @@ impl eframe::App for KatoriApp {
                     ui.label("Size:");
                     ui.add(egui::DragValue::new(&mut self.memory_size).speed(1.0));
                     if ui.button("Read").clicked() {
-                        // Placeholder for memory reading
-                        self.console_output.push_str(&format!("Reading {} bytes from {}\n", self.memory_size, self.memory_address));
+                        self.read_memory();
                     }
                 });
                 
