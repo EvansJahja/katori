@@ -193,35 +193,110 @@ impl GdbAdapter {
     pub async fn load_executable(&mut self, path: &str) -> Result<GdbResult> {
         self.send_command(&format!("file-exec-and-symbols \"{}\"", path)).await
     }
-    
+
+    /// Attach to a running process by PID
+    pub async fn attach_to_process(&mut self, pid: u32) -> Result<GdbResult> {
+        self.send_command(&format!("target-attach {}", pid)).await
+    }
+
+    /// Attach to a remote GDB server
+    pub async fn attach_to_gdbserver(&mut self, host_port: &str) -> Result<GdbResult> {
+        self.send_command(&format!("target-select remote {}", host_port)).await
+    }
+
+    /// Detach from current target
+    pub async fn detach(&mut self) -> Result<GdbResult> {
+        self.send_command("target-detach").await
+    }
+
+    /// Interrupt execution (break)
+    pub async fn interrupt(&mut self) -> Result<GdbResult> {
+        self.send_command("exec-interrupt").await
+    }
+
     /// Set a breakpoint at the specified location
     pub async fn set_breakpoint(&mut self, location: &str) -> Result<GdbResult> {
         self.send_command(&format!("break-insert {}", location)).await
     }
-    
+
+    /// Set a breakpoint at a specific address
+    pub async fn set_breakpoint_at_address(&mut self, address: &str) -> Result<GdbResult> {
+        self.send_command(&format!("break-insert *{}", address)).await
+    }
+
     /// Remove a breakpoint by number
     pub async fn remove_breakpoint(&mut self, number: u32) -> Result<GdbResult> {
         self.send_command(&format!("break-delete {}", number)).await
     }
-    
+
+    /// List all breakpoints
+    pub async fn list_breakpoints(&mut self) -> Result<GdbResult> {
+        self.send_command("break-list").await
+    }
+
     /// Execute the target program
     pub async fn run_program(&mut self) -> Result<GdbResult> {
         self.send_command("exec-run").await
     }
-    
+
     /// Continue execution
     pub async fn continue_execution(&mut self) -> Result<GdbResult> {
         self.send_command("exec-continue").await
     }
-    
+
     /// Step one instruction
     pub async fn step(&mut self) -> Result<GdbResult> {
         self.send_command("exec-step").await
     }
-    
-    /// Step over one instruction
+
+    /// Step over one instruction (next line)
     pub async fn next(&mut self) -> Result<GdbResult> {
         self.send_command("exec-next").await
+    }
+
+    /// Step one assembly instruction
+    pub async fn step_instruction(&mut self) -> Result<GdbResult> {
+        self.send_command("exec-step-instruction").await
+    }
+
+    /// Step over one assembly instruction
+    pub async fn next_instruction(&mut self) -> Result<GdbResult> {
+        self.send_command("exec-next-instruction").await
+    }
+
+    /// Step out of current function
+    pub async fn step_out(&mut self) -> Result<GdbResult> {
+        self.send_command("exec-finish").await
+    }
+
+    /// Get register values
+    pub async fn get_registers(&mut self) -> Result<GdbResult> {
+        self.send_command("data-list-register-values x").await
+    }
+
+    /// Get register names
+    pub async fn get_register_names(&mut self) -> Result<GdbResult> {
+        self.send_command("data-list-register-names").await
+    }
+
+    /// Disassemble at current location
+    pub async fn disassemble_current(&mut self, lines: u32) -> Result<GdbResult> {
+        self.send_command(&format!("data-disassemble -s $pc -e $pc+{} -- 0", lines * 4)).await
+    }
+
+    /// Disassemble at specific address
+    pub async fn disassemble_at_address(&mut self, address: &str, lines: u32) -> Result<GdbResult> {
+        self.send_command(&format!("data-disassemble -s {} -e {}+{} -- 0", address, address, lines * 4)).await
+    }
+
+    /// Get stack frames
+    pub async fn get_stack_frames(&mut self) -> Result<GdbResult> {
+        self.send_command("stack-list-frames").await
+    }
+
+    /// Read memory at address
+    pub async fn read_memory(&mut self, address: &str, size: u32) -> Result<GdbResult> {
+        self.send_command(&format!("data-read-memory-bytes {} {}", address, size)).await
     }
     
     /// Check if GDB is running

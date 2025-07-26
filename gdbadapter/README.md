@@ -34,6 +34,41 @@ async fn main() -> Result<()> {
 }
 ```
 
+### Attach to GDB Server
+
+```rust
+use gdbadapter::{GdbAdapter, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut adapter = GdbAdapter::new();
+    
+    // Start GDB session
+    adapter.start_session().await?;
+    
+    // Attach to GDB server (e.g., gdbserver running on localhost:1234)
+    adapter.attach_to_gdbserver("localhost:1234").await?;
+    
+    // Set breakpoints by address (useful when no symbols available)
+    adapter.set_breakpoint_at_address("0x12345678").await?;
+    
+    // Continue execution
+    adapter.continue_execution().await?;
+    
+    // Get assembly at current location
+    let disasm = adapter.disassemble_current(20).await?;
+    
+    // Get register values
+    let registers = adapter.get_registers().await?;
+    
+    // Detach when done
+    adapter.detach().await?;
+    adapter.stop_session().await?;
+    
+    Ok(())
+}
+```
+
 ### Event Handling
 
 ```rust
@@ -88,12 +123,27 @@ Main interface for GDB communication.
 
 **Debugging Commands:**
 - `load_executable(path: &str) -> Result<GdbResult>` - Load executable file
+- `attach_to_process(pid: u32) -> Result<GdbResult>` - Attach to running process
+- `attach_to_gdbserver(host_port: &str) -> Result<GdbResult>` - Attach to GDB server
+- `detach() -> Result<GdbResult>` - Detach from current target
+- `interrupt() -> Result<GdbResult>` - Interrupt execution (break)
 - `set_breakpoint(location: &str) -> Result<GdbResult>` - Set breakpoint
+- `set_breakpoint_at_address(address: &str) -> Result<GdbResult>` - Set breakpoint at address
 - `remove_breakpoint(number: u32) -> Result<GdbResult>` - Remove breakpoint
+- `list_breakpoints() -> Result<GdbResult>` - List all breakpoints
 - `run_program() -> Result<GdbResult>` - Start program execution
 - `continue_execution() -> Result<GdbResult>` - Continue execution
 - `step() -> Result<GdbResult>` - Step one instruction
 - `next() -> Result<GdbResult>` - Step over one instruction
+- `step_instruction() -> Result<GdbResult>` - Step one assembly instruction
+- `next_instruction() -> Result<GdbResult>` - Step over one assembly instruction
+- `step_out() -> Result<GdbResult>` - Step out of current function
+- `get_registers() -> Result<GdbResult>` - Get register values
+- `get_register_names() -> Result<GdbResult>` - Get register names
+- `disassemble_current(lines: u32) -> Result<GdbResult>` - Disassemble at current location
+- `disassemble_at_address(address: &str, lines: u32) -> Result<GdbResult>` - Disassemble at address
+- `get_stack_frames() -> Result<GdbResult>` - Get stack frames
+- `read_memory(address: &str, size: u32) -> Result<GdbResult>` - Read memory
 
 #### `GdbEvent`
 Events received from GDB.

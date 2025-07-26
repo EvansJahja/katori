@@ -240,3 +240,40 @@ impl std::fmt::Display for StopReason {
         write!(f, "{}", s)
     }
 }
+
+/// Represents a CPU register
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Register {
+    pub number: u32,
+    pub name: String,
+    pub value: String,
+}
+
+/// Represents a line of disassembled code
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AssemblyLine {
+    pub address: String,
+    pub function: Option<String>,
+    pub offset: Option<u32>,
+    pub instruction: String,
+    pub opcodes: Option<String>,
+}
+
+/// Represents a stack frame
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StackFrame {
+    pub level: u32,
+    pub address: String,
+    pub function: Option<String>,
+    pub file: Option<String>,
+    pub fullname: Option<String>,
+    pub line: Option<u32>,
+    pub arch: Option<String>,
+}
+
+/// Represents a block of memory
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryBlock {
+    pub address: String,
+    pub contents: Vec<u8>,
+}
