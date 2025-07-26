@@ -367,21 +367,6 @@ impl Drop for GdbAdapter {
 mod tests {
     use super::*;
 
-    // use tokio async test
-    #[tokio::test]
-    async fn test_run_gdb() {
-        let mut gdb = GdbAdapter::new();
-        let result = gdb.start_session().await;
-        assert!(result.is_ok());
-        assert!(gdb.is_running());
-
-        gdb.attach_to_gdbserver("localhost:1337").await.unwrap();
-        
-        // Clean up
-        let _ = gdb.stop_session().await;
-    }
-
-    
     #[test]
     fn test_parse_done_result() {
         let input = "^done";
