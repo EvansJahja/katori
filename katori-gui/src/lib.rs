@@ -182,7 +182,7 @@ impl KatoriApp {
                     // Process the command with timeout
                     let result = tokio::time::timeout(
                         Self::get_command_timeout(&command),
-                        Self::process_command(gdb_adapter.clone(), command.clone())
+                        Self::process_command(gdb_adapter.clone(), command.clone(), event_sender.clone())
                     ).await;
                     
                     match result {
@@ -230,7 +230,7 @@ impl KatoriApp {
     /// Get appropriate timeout for different command types
     fn get_command_timeout(command: &GdbCommand) -> std::time::Duration {
         match command {
-            GdbCommand::Continue => std::time::Duration::from_secs(300), // 5 minutes for continue (long running)
+            GdbCommand::Continue => std::time::Duration::from_secs(u64::MAX), // Effectively no timeout for continue
             GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut => std::time::Duration::from_secs(10),
             GdbCommand::Interrupt => std::time::Duration::from_secs(10),
             GdbCommand::RefreshDebugInfo => std::time::Duration::from_secs(5),
@@ -245,6 +245,7 @@ impl KatoriApp {
     async fn process_command(
         gdb_adapter: Arc<Mutex<GdbAdapter>>,
         command: GdbCommand,
+        event_sender: std::sync::mpsc::Sender<DebugEvent>,
     ) -> Result<(), String> {
         let mut adapter = gdb_adapter.lock().await;
         
@@ -281,7 +282,9 @@ impl KatoriApp {
             }
             GdbCommand::RefreshDebugInfo => {
                 // This is a special command that sends multiple events
-                Self::process_refresh_debug_info(gdb_adapter.clone()).await
+                Self::send_refresh_debug_info_internal(gdb_adapter.clone(), event_sender).await
+                    .map_err(|e| format!("RefreshDebugInfo failed: {}", e))?;
+                Ok(())
             }
             GdbCommand::ReadMemory(address, size) => {
                 adapter.read_memory(&address, size).await
@@ -706,7 +709,7 @@ impl KatoriApp {
     }
     
     fn continue_execution(&mut self) {
-        info!("continue_execution: Starting continue operation");
+        info!("continue_execution: Starting continue operation (async)");
         self.console_output.push_str("Continuing execution...\n");
         
         if !self.is_debugging || !self.is_attached {
@@ -716,75 +719,18 @@ impl KatoriApp {
             return;
         }
 
-        info!("continue_execution: Attempting to continue with blocking approach...");
+        info!("continue_execution: Sending Continue command via channel");
         
-        let rt = tokio::runtime::Handle::current();
-        info!("continue_execution: Got tokio runtime handle, calling block_on");
-        
-        match rt.block_on(async {
-            debug!("continue_execution: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let lock_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.gdb_adapter.lock()
-            ).await;
-            
-            match lock_result {
-                Ok(mut adapter) => {
-                    debug!("continue_execution: Adapter lock acquired, calling continue_execution()...");
-                    // Add timeout to the actual GDB command
-                    let command_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        adapter.continue_execution()
-                    ).await;
-                    
-                    match command_result {
-                        Ok(result) => {
-                            debug!("continue_execution: continue_execution() returned: {:?}", result);
-                            // Check if the GDB command itself succeeded
-                            match result {
-                                Ok(gdb_result) => {
-                                    // Check if GDB returned an error result
-                                    if gdb_result.class == gdbadapter::ResultClass::Error {
-                                        let error_msg = gdb_result.results.get("msg")
-                                            .and_then(|v| v.as_string())
-                                            .unwrap_or("Unknown GDB error");
-                                        error!("continue_execution: GDB returned error: {}", error_msg);
-                                        Err(gdbadapter::GdbError::CommandError(error_msg.to_string()))
-                                    } else {
-                                        info!("continue_execution: GDB command executed successfully: {:?}", gdb_result);
-                                        Ok(gdb_result)
-                                    }
-                                }
-                                Err(gdb_error) => {
-                                    error!("continue_execution: GDB command failed: {}", gdb_error);
-                                    Err(gdb_error)
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            error!("continue_execution: Timeout executing continue_execution() after 10 seconds");
-                            Err(gdbadapter::GdbError::CommunicationError("Timeout executing continue command".to_string()))
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("continue_execution: Timeout acquiring adapter lock after 5 seconds");
-                    Err(gdbadapter::GdbError::CommunicationError("Timeout acquiring GDB adapter lock".to_string()))
-                }
-            }
-        }) {
-            Ok(_) => {
-                info!("continue_execution: Continue command completed successfully");
-                self.console_output.push_str("Execution continued\n");
-            }
-            Err(e) => {
-                error!("continue_execution: Continue failed with error: {}", e);
-                self.console_output.push_str(&format!("Failed to continue execution: {}\n", e));
-            }
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::Continue) {
+            error!("continue_execution: Failed to send Continue command: {}", e);
+            self.console_output.push_str(&format!("Failed to send continue command: {}\n", e));
+        } else {
+            info!("continue_execution: Continue command sent successfully");
+            // The result will come back via the event system
+            // Update UI state immediately to show that we're running
+            self.target_state = TargetState::Running;
         }
-        info!("continue_execution: Continue operation completed");
     }
     
     fn step_over(&mut self) {
@@ -1020,7 +966,7 @@ impl KatoriApp {
     }
     
     fn interrupt_execution(&mut self) {
-        info!("interrupt_execution: Starting interrupt operation");
+        info!("interrupt_execution: Starting interrupt operation (async)");
         self.console_output.push_str("Interrupting execution...\n");
         
         if !self.is_debugging || !self.is_attached {
@@ -1030,81 +976,39 @@ impl KatoriApp {
             return;
         }
         
-        info!("interrupt_execution: Attempting to interrupt with blocking approach...");
-        let rt = tokio::runtime::Handle::current();
+        info!("interrupt_execution: Sending Interrupt command via channel");
         
-        match rt.block_on(async {
-            debug!("interrupt_execution: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let lock_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.gdb_adapter.lock()
-            ).await;
-            
-            match lock_result {
-                Ok(mut adapter) => {
-                    debug!("interrupt_execution: Adapter lock acquired, calling interrupt()...");
-                    // Add timeout to the actual GDB command
-                    let command_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        adapter.interrupt()
-                    ).await;
-                    
-                    match command_result {
-                        Ok(result) => {
-                            debug!("interrupt_execution: interrupt() returned: {:?}", result);
-                            // Check if the GDB command itself succeeded
-                            match result {
-                                Ok(gdb_result) => {
-                                    // Check if GDB returned an error result
-                                    if gdb_result.class == gdbadapter::ResultClass::Error {
-                                        let error_msg = gdb_result.results.get("msg")
-                                            .and_then(|v| v.as_string())
-                                            .unwrap_or("Unknown GDB error");
-                                        error!("interrupt_execution: GDB returned error: {}", error_msg);
-                                        Err(gdbadapter::GdbError::CommandError(error_msg.to_string()))
-                                    } else {
-                                        info!("interrupt_execution: GDB command executed successfully: {:?}", gdb_result);
-                                        Ok(gdb_result)
-                                    }
-                                }
-                                Err(gdb_error) => {
-                                    error!("interrupt_execution: GDB command failed: {}", gdb_error);
-                                    Err(gdb_error)
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            error!("interrupt_execution: Timeout executing interrupt() after 10 seconds");
-                            Err(gdbadapter::GdbError::CommunicationError("Timeout executing interrupt command".to_string()))
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("interrupt_execution: Timeout acquiring adapter lock after 5 seconds");
-                    Err(gdbadapter::GdbError::CommunicationError("Timeout acquiring GDB adapter lock".to_string()))
-                }
-            }
-        }) {
-            Ok(_) => {
-                info!("interrupt_execution: Execution interrupted successfully");
-                self.console_output.push_str("Execution interrupted\n");
-                // Refresh debug info after interrupting
-                info!("interrupt_execution: Refreshing debug info after interrupt");
-                self.refresh_debug_info_blocking();
-            }
-            Err(e) => {
-                error!("interrupt_execution: Failed to interrupt execution: {}", e);
-                self.console_output.push_str(&format!("Failed to interrupt execution: {}\n", e));
-            }
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::Interrupt) {
+            error!("interrupt_execution: Failed to send Interrupt command: {}", e);
+            self.console_output.push_str(&format!("Failed to send interrupt command: {}\n", e));
+        } else {
+            info!("interrupt_execution: Interrupt command sent successfully");
+            // The result will come back via the event system
         }
-        info!("interrupt_execution: Interrupt operation completed");
     }
     
     fn refresh_debug_info(&mut self) {
+        info!("refresh_debug_info: Starting debug info refresh (async)");
         self.console_output.push_str("Refreshing debug information...\n");
-        self.refresh_debug_info_blocking();
+        
+        if !self.is_debugging || !self.is_attached {
+            warn!("refresh_debug_info: Not debugging or attached (debugging: {}, attached: {})", 
+                  self.is_debugging, self.is_attached);
+            self.console_output.push_str("Not attached to a debug target\n");
+            return;
+        }
+
+        info!("refresh_debug_info: Sending RefreshDebugInfo command via channel");
+        
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::RefreshDebugInfo) {
+            error!("refresh_debug_info: Failed to send RefreshDebugInfo command: {}", e);
+            self.console_output.push_str(&format!("Failed to send refresh command: {}\n", e));
+        } else {
+            info!("refresh_debug_info: RefreshDebugInfo command sent successfully");
+            // The result will come back via the event system
+        }
     }
     
     fn read_memory(&mut self) {
