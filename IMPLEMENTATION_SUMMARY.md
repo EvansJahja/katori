@@ -72,6 +72,11 @@
   - `stack_scroll` - Stack frame panel
   - `memory_scroll` - Memory viewer panel
 
+#### **GDB/MI Parser Stack Frame Issue** 
+- **Root Cause**: Parser couldn't handle key-value pairs inside lists (`stack=[frame={...}]`)
+- **Solution**: Enhanced list parser to detect and handle `key=value` pairs within lists
+- **Fix**: Added lookahead logic to distinguish between simple values and key-value pairs
+
 #### **Compilation Warnings**
 - All code compiles successfully with only minor unused import warnings
 - No scroll ID conflicts or egui widget errors
@@ -100,6 +105,46 @@
 7. **Debug Controls** - ✅ Break, Continue, Step Over, Step Into, Step Out buttons
 8. **Breakpoint Management** - ✅ Add/remove breakpoints interface
 
+## 🚨 **Critical Debugging Lessons Learned**
+
+### **Lesson 1: Sync/Async Architecture Decision Framework**
+**Problem**: Oscillated between async/blocking approaches without clear strategy, causing:
+- Step operations that appeared to work but did nothing (unawaited `tokio::spawn`)
+- GUI freezing when blocking operations held locks too long
+- Timeout band-aids instead of addressing root architectural issues
+
+**Solution Framework**:
+1. **Choose ONE approach per subsystem**: Either fully async or fully blocking
+2. **For GUI operations**: Use blocking with timeouts to ensure immediate feedback
+3. **For background tasks**: Use proper async with `.await` on all operations
+4. **Never mix**: Don't use `tokio::spawn` for operations that need immediate results
+5. **Test immediately**: After any sync/async change, test the actual user workflow
+
+**Rule**: When step operations don't work, the issue is almost always architectural (sync/async mismatch), not timeout-related.
+
+### **Lesson 2: Protocol Debugging First Principles**
+**Problem**: Treated parser errors as secondary issues, focused on symptoms (timeouts, freezing) instead of root cause.
+
+**Required Debugging Order**:
+1. **Trace logging FIRST**: Add comprehensive trace logging to all protocol I/O before investigating anything else
+2. **Verify parser with real data**: Create tests using exact failing protocol output
+3. **Fix parser before architecture**: Protocol parsing issues will manifest as mysterious hangs/timeouts
+4. **Use progressive complexity**: Test simple cases first, then build up to complex structures
+
+**Rule**: When GDB commands hang or timeout indefinitely, assume parser failure until proven otherwise. Add trace logging immediately.
+
+### **Lesson 3: Error Manifestation Patterns**
+**Common Misleading Symptoms**:
+- "GUI freezing" → Often parser hanging on malformed input
+- "Commands timeout" → Often parser failing to recognize valid responses  
+- "Step operations do nothing" → Often async operations not awaited
+- "Lock contention" → Often underlying parser issues causing retries
+
+**Debugging Priority**:
+1. Protocol layer (parsing, I/O) - Use trace logging
+2. Architecture layer (sync/async, locking) - Test user workflows
+3. UI layer (responsiveness, timeouts) - Only after 1&2 are verified
+
 ## 🔄 **Next Integration Steps**
 
 ### Phase 1: Live GDB Integration
@@ -121,13 +166,14 @@
 
 ## 📋 **Current Status**
 
-- **Architecture**: ✅ Complete and modular
+- **Architecture**: ✅ Complete and modular (blocking approach for correctness)
 - **GDB Adapter**: ✅ Feature-complete with attach support
 - **GUI Framework**: ✅ Modern, responsive interface
 - **Attach Functionality**: ✅ Process and GDB server support
 - **Debug Panels**: ✅ Assembly, registers, stack, memory
 - **Error Handling**: ✅ ScrollArea ID conflicts resolved
-- **Testing**: ✅ Comprehensive test suite passing
-- **Documentation**: ✅ Complete API documentation
+- **Parser**: ✅ Handles complex GDB/MI output including stack frames
+- **Testing**: ✅ Comprehensive test suite passing including real GDB output
+- **Documentation**: ✅ Complete API documentation with debugging lessons
 
-The foundation is now solid for a professional GDB frontend with attach-based debugging, assembly view, and comprehensive debug information display. All your requirements have been implemented in the UI framework and GDB adapter.
+The foundation is now solid for a professional GDB frontend with attach-based debugging, assembly view, and comprehensive debug information display. All your requirements have been implemented in the UI framework and GDB adapter, with robust error handling and a debugged protocol parser.
