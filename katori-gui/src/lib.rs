@@ -1,7 +1,13 @@
 use eframe::egui;
-use gdbadapter::{GdbAdapter, GdbEvent, AsyncClass, ResultClass, Value, Register, AssemblyLine, StackFrame};
+use gdbadapter::{GdbAdapter, GdbEvent, Register, AssemblyLine, StackFrame, StreamType};
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 pub fn run_gui() -> i32 {
+    // Create a tokio runtime for async operations
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let _guard = rt.enter();
+    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
@@ -12,7 +18,7 @@ pub fn run_gui() -> i32 {
     match eframe::run_native(
         "Katori",
         options,
-        Box::new(|_cc| Box::new(KatoriApp::default())),
+        Box::new(|_cc| Box::new(KatoriApp::new())),
     ) {
         Ok(_) => 0,
         Err(e) => {
@@ -25,7 +31,10 @@ pub fn run_gui() -> i32 {
 /// Main application state
 pub struct KatoriApp {
     /// GDB adapter instance
-    gdb_adapter: GdbAdapter,
+    gdb_adapter: Arc<Mutex<GdbAdapter>>,
+    
+    /// Event channel for GDB events
+    gdb_event_receiver: Option<mpsc::UnboundedReceiver<GdbEvent>>,
     
     /// Debug session state
     is_debugging: bool,
@@ -67,10 +76,13 @@ enum AttachMode {
     GdbServer,
 }
 
-impl Default for KatoriApp {
-    fn default() -> Self {
+impl KatoriApp {
+    fn new() -> Self {
+        let gdb_adapter = Arc::new(Mutex::new(GdbAdapter::new()));
+        
         Self {
-            gdb_adapter: GdbAdapter::new(),
+            gdb_adapter,
+            gdb_event_receiver: None,
             is_debugging: false,
             is_attached: false,
             current_pid: None,
@@ -94,18 +106,30 @@ impl Default for KatoriApp {
             pid_input: String::new(),
         }
     }
-}
-
-impl KatoriApp {
+    
     fn start_gdb_session(&mut self) {
         self.is_debugging = true;
-        self.console_output.push_str("GDB session started\n");
+        self.console_output.push_str("Starting GDB session...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.start_session().await {
+                eprintln!("Failed to start GDB: {}", e);
+            }
+        });
     }
     
     fn stop_gdb_session(&mut self) {
         self.is_debugging = false;
         self.is_attached = false;
-        self.console_output.push_str("GDB session stopped\n");
+        self.console_output.push_str("Stopping GDB session...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            let _ = adapter.stop_session().await;
+        });
     }
     
     fn attach_to_target(&mut self) {
@@ -114,12 +138,29 @@ impl KatoriApp {
                 if let Ok(pid) = self.pid_input.parse::<u32>() {
                     self.current_pid = Some(pid);
                     self.is_attached = true;
-                    self.console_output.push_str(&format!("Attached to process {}\n", pid));
+                    self.console_output.push_str(&format!("Attaching to process {}...\n", pid));
+                    
+                    let adapter = self.gdb_adapter.clone();
+                    tokio::spawn(async move {
+                        let mut adapter = adapter.lock().await;
+                        if let Err(e) = adapter.attach_to_process(pid).await {
+                            eprintln!("Failed to attach to process: {}", e);
+                        }
+                    });
                 }
             }
             AttachMode::GdbServer => {
                 self.is_attached = true;
-                self.console_output.push_str(&format!("Attached to GDB server at {}\n", self.current_host_port));
+                self.console_output.push_str(&format!("Attaching to GDB server at {}...\n", self.current_host_port));
+                
+                let host_port = self.current_host_port.clone();
+                let adapter = self.gdb_adapter.clone();
+                tokio::spawn(async move {
+                    let mut adapter = adapter.lock().await;
+                    if let Err(e) = adapter.attach_to_gdbserver(&host_port).await {
+                        eprintln!("Failed to connect to GDB server: {}", e);
+                    }
+                });
             }
         }
     }
@@ -127,45 +168,156 @@ impl KatoriApp {
     fn detach_from_target(&mut self) {
         self.is_attached = false;
         self.current_pid = None;
-        self.console_output.push_str("Detached from target\n");
+        self.console_output.push_str("Detaching from target...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            let _ = adapter.detach().await;
+        });
     }
     
     fn set_breakpoint(&mut self) {
         if !self.breakpoint_input.is_empty() {
             self.breakpoints.push(self.breakpoint_input.clone());
-            self.console_output.push_str(&format!("Set breakpoint at: {}\n", self.breakpoint_input));
+            self.console_output.push_str(&format!("Setting breakpoint at: {}\n", self.breakpoint_input));
+            
+            let location = self.breakpoint_input.clone();
+            let adapter = self.gdb_adapter.clone();
+            tokio::spawn(async move {
+                let mut adapter = adapter.lock().await;
+                if let Err(e) = adapter.set_breakpoint(&location).await {
+                    eprintln!("Failed to set breakpoint: {}", e);
+                }
+            });
+            
             self.breakpoint_input.clear();
         }
     }
     
     fn continue_execution(&mut self) {
         self.console_output.push_str("Continuing execution...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.continue_execution().await {
+                eprintln!("Failed to continue execution: {}", e);
+            }
+        });
     }
     
     fn step_over(&mut self) {
         self.console_output.push_str("Step over\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.next().await {
+                eprintln!("Failed to step over: {}", e);
+            }
+        });
     }
     
     fn step_into(&mut self) {
         self.console_output.push_str("Step into\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.step().await {
+                eprintln!("Failed to step into: {}", e);
+            }
+        });
     }
     
     fn step_out(&mut self) {
         self.console_output.push_str("Step out\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.step_out().await {
+                eprintln!("Failed to step out: {}", e);
+            }
+        });
     }
     
     fn interrupt_execution(&mut self) {
         self.console_output.push_str("Interrupting execution...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            if let Err(e) = adapter.interrupt().await {
+                eprintln!("Failed to interrupt execution: {}", e);
+            }
+        });
     }
     
     fn refresh_debug_info(&mut self) {
-        // Placeholder for refreshing registers, assembly, stack frames
         self.console_output.push_str("Refreshing debug information...\n");
+        
+        let adapter = self.gdb_adapter.clone();
+        tokio::spawn(async move {
+            let mut adapter = adapter.lock().await;
+            
+            // Get registers
+            if let Ok(_result) = adapter.get_registers().await {
+                // TODO: Parse and update registers in GUI
+            }
+            
+            // Get stack frames
+            if let Ok(_result) = adapter.get_stack_frames().await {
+                // TODO: Parse and update stack frames in GUI
+            }
+            
+            // Get assembly
+            if let Ok(_result) = adapter.disassemble_current(20).await {
+                // TODO: Parse and update assembly in GUI
+            }
+        });
+    }
+    
+    /// Process pending GDB events and update UI state
+    fn process_gdb_events(&mut self) {
+        // Use try_lock to avoid blocking if the adapter is busy
+        if let Ok(adapter) = self.gdb_adapter.try_lock() {
+            // Try to get events without blocking
+            while let Some(event) = adapter.try_recv_event() {
+                match event {
+                    GdbEvent::Stream(stream) => {
+                        match stream.stream_type {
+                            StreamType::Console => {
+                                self.console_output.push_str(&format!("GDB: {}\n", stream.content));
+                            }
+                            StreamType::Target => {
+                                self.console_output.push_str(&format!("Target: {}\n", stream.content));
+                            }
+                            StreamType::Log => {
+                                self.console_output.push_str(&format!("{}\n", stream.content));
+                            }
+                        }
+                    }
+                    GdbEvent::Result(result) => {
+                        // Handle result events if needed
+                        self.console_output.push_str(&format!("GDB Result: {:?}\n", result.class));
+                    }
+                    GdbEvent::Async(async_record) => {
+                        // Handle async events if needed
+                        self.console_output.push_str(&format!("GDB Async: {:?}\n", async_record.class));
+                    }
+                }
+            }
+        }
     }
 }
 
 impl eframe::App for KatoriApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Process GDB events to update console output
+        self.process_gdb_events();
+        
         // Menu bar
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {

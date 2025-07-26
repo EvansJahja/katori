@@ -84,11 +84,18 @@ impl GdbAdapter {
             GdbError::CommunicationError("Failed to get stdout handle".into())
         })?;
         
+        let stderr = process.stderr.take().ok_or_else(|| {
+            GdbError::CommunicationError("Failed to get stderr handle".into())
+        })?;
+        
         self.stdin = Some(stdin);
         self.process = Some(process);
         
-        // Start the output reader task
+        // Start the output reader task for stdout
         self.start_output_reader(stdout).await;
+        
+        // Start the stderr reader task
+        self.start_stderr_reader(stderr).await;
         
         *self.is_running.lock().unwrap() = true;
         
@@ -131,6 +138,39 @@ impl GdbAdapter {
                                     }
                                 }
                             }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    
+    /// Start the stderr reader task that processes GDB stderr output
+    async fn start_stderr_reader(&self, stderr: tokio::process::ChildStderr) {
+        let event_sender = self.event_sender.clone();
+        let is_running = self.is_running.clone();
+        
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            
+            while *is_running.lock().unwrap() {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            // Print to CLI console
+                            eprintln!("GDB stderr: {}", trimmed);
+                            
+                            // Send as a log stream event to GUI
+                            let stream_record = StreamRecord {
+                                stream_type: StreamType::Log,
+                                content: format!("GDB stderr: {}", trimmed),
+                            };
+                            let _ = event_sender.send(GdbEvent::Stream(stream_record));
                         }
                     }
                     Err(_) => break,
@@ -308,6 +348,11 @@ impl GdbAdapter {
     pub fn try_recv_event(&self) -> Option<GdbEvent> {
         self.event_receiver.lock().unwrap().try_recv().ok()
     }
+    
+    /// Get a reference to the event receiver for setting up GUI event handling
+    pub fn get_event_receiver(&self) -> Arc<Mutex<mpsc::UnboundedReceiver<GdbEvent>>> {
+        self.event_receiver.clone()
+    }
 }
 
 impl Drop for GdbAdapter {
@@ -321,6 +366,21 @@ impl Drop for GdbAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // use tokio async test
+    #[tokio::test]
+    async fn test_run_gdb() {
+        let mut gdb = GdbAdapter::new();
+        let result = gdb.start_session().await;
+        assert!(result.is_ok());
+        assert!(gdb.is_running());
+
+        gdb.attach_to_gdbserver("localhost:1337").await.unwrap();
+        
+        // Clean up
+        let _ = gdb.stop_session().await;
+    }
+
     
     #[test]
     fn test_parse_done_result() {
