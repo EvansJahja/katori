@@ -252,6 +252,18 @@ impl GdbAdapter {
         });
         
         log::trace!("send_command: Received result for token {}: {:?}", token, result);
+        if let Ok(r) = result {
+            if r.class == ResultClass::Error {
+                let error_msg = r.results.get("msg")
+                    .and_then(|v| v.as_string())
+                    .unwrap_or("Unknown error")
+                    .to_string();
+                log::error!("send_command: GDB returned error: {}", error_msg);
+                return Err(GdbError::CommandError(error_msg));
+            } else {
+                return Ok(r);
+            }
+        } 
         result
     }
     

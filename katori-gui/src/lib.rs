@@ -804,7 +804,7 @@ impl KatoriApp {
                     }
                     
                     let mut registers = None;
-                    let mut stack_frames = None;
+                    let mut stack_frames: Option<Vec<StackFrame>> = None;
                     let mut assembly_lines = None;
                     
                     // Get registers
@@ -844,11 +844,15 @@ impl KatoriApp {
                                 error!("refresh_debug_info_blocking: GDB returned error for get_stack_frames: {}", error_msg);
                             } else {
                                 debug!("refresh_debug_info_blocking: Got stack frames result");
-                                stack_frames = Self::parse_stack_frames(&result);
-                                if let Some(ref frames) = stack_frames {
-                                    debug!("refresh_debug_info_blocking: Parsed {} stack frames", frames.len());
-                                } else {
-                                    warn!("refresh_debug_info_blocking: Failed to parse stack frames");
+                                match Self::parse_stack_frames(&result) {
+                                    Ok(frames) => {
+                                        debug!("refresh_debug_info_blocking: Parsed {} stack frames", frames.len());
+                                        stack_frames = Some(frames);
+                                    }
+                                    Err(e) => {
+                                        error!("refresh_debug_info_blocking: Failed to parse stack frames: {}", e);
+                                        stack_frames = None;
+                                    }
                                 }
                             }
                         }
@@ -1088,8 +1092,14 @@ impl KatoriApp {
                     debug!("auto_refresh_debug_info: Getting stack frames...");
                     match adapter.get_stack_frames().await {
                         Ok(result) => {
-                            if let Some(stack_frames) = Self::parse_stack_frames(&result) {
-                                let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
+                            match Self::parse_stack_frames(&result) {
+                                Ok(stack_frames) => {
+                                    let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
+                                }
+                                Err(e) => {
+                                    error!("auto_refresh_debug_info: Failed to parse stack frames: {}", e);
+                                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to parse stack frames: {}\n", e)));
+                                }
                             }
                         }
                         Err(e) => {
@@ -1165,19 +1175,39 @@ impl KatoriApp {
     }
     
     /// Parse stack frames from GDB/MI result
-    fn parse_stack_frames(result: &gdbadapter::GdbResult) -> Option<Vec<StackFrame>> {
+    fn parse_stack_frames(result: &gdbadapter::GdbResult) -> Result<Vec<StackFrame>, String> {
         // GDB/MI uses "stack" field for -stack-list-frames
         if let Some(Value::List(frame_list)) = result.results.get("stack") {
             let mut frames = Vec::new();
             
-            for frame_value in frame_list {
+            for (index, frame_value) in frame_list.iter().enumerate() {
                 if let Some(frame_tuple) = frame_value.as_tuple() {
-                    let level = frame_tuple.get("level")?.as_string()?.parse().ok()?;
-                    let address = frame_tuple.get("addr")?.as_string()?.to_string();
-                    let function = frame_tuple.get("func").and_then(|v| v.as_string()).map(|s| s.to_string());
-                    let file = frame_tuple.get("file").and_then(|v| v.as_string()).map(|s| s.to_string());
-                    let fullname = frame_tuple.get("fullname").and_then(|v| v.as_string()).map(|s| s.to_string());
-                    let line = frame_tuple.get("line").and_then(|v| v.as_string()).and_then(|s| s.parse().ok());
+                    // Check for nested frame structure (frame={...})
+                    let actual_frame = if let Some(nested_frame) = frame_tuple.get("frame") {
+                        if let Some(nested_tuple) = nested_frame.as_tuple() {
+                            nested_tuple
+                        } else {
+                            return Err(format!("Frame {} has invalid nested frame structure", index));
+                        }
+                    } else {
+                        frame_tuple
+                    };
+                    
+                    let level = actual_frame.get("level")
+                        .and_then(|v| v.as_string())
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| format!("Frame {} missing or invalid 'level' field", index))?;
+                    
+                    let address = actual_frame.get("addr")
+                        .and_then(|v| v.as_string())
+                        .ok_or_else(|| format!("Frame {} missing 'addr' field", index))?
+                        .to_string();
+                    
+                    let function = actual_frame.get("func").and_then(|v| v.as_string()).map(|s| s.to_string());
+                    let file = actual_frame.get("file").and_then(|v| v.as_string()).map(|s| s.to_string());
+                    let fullname = actual_frame.get("fullname").and_then(|v| v.as_string()).map(|s| s.to_string());
+                    let line = actual_frame.get("line").and_then(|v| v.as_string()).and_then(|s| s.parse().ok());
+                    let arch = actual_frame.get("arch").and_then(|v| v.as_string()).map(|s| s.to_string());
                     
                     frames.push(StackFrame {
                         level,
@@ -1186,16 +1216,19 @@ impl KatoriApp {
                         file,
                         fullname,
                         line,
-                        arch: None,
+                        arch,
                     });
+                } else {
+                    return Err(format!("Frame {} is not a tuple structure", index));
                 }
             }
             
-            Some(frames)
+            Ok(frames)
         } else {
             // Check if there's a different structure
             debug!("parse_stack_frames: Available stack result keys: {:?}", result.results.keys().collect::<Vec<_>>());
-            None
+            Err(format!("No 'stack' field found in result. Available keys: {:?}", 
+                result.results.keys().collect::<Vec<_>>()))
         }
     }
     
@@ -1442,7 +1475,7 @@ impl eframe::App for KatoriApp {
                                         });
                                     } else {
                                         for line in &self.assembly_lines {
-                                            ui.monospace(format!("0x{}: {}", line.address, line.instruction));
+                                            ui.monospace(format!("{}: {}", line.address, line.instruction));
                                         }
                                     }
                                 });
