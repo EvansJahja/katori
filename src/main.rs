@@ -1,4 +1,3 @@
-use katori_gui;
 use gdbadapter::GdbAdapter;
 
 fn main() {
@@ -19,6 +18,6 @@ fn main() {
     // Start the GUI application
     let exit_code = katori_gui::run_gui();
     
-    log::info!("Application exited with code: {}", exit_code);
+    log::info!("Application exited with code: {exit_code}");
     std::process::exit(exit_code);
 }
