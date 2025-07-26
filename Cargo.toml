@@ -1,6 +1,11 @@
+[workspace]
+members = ["katori-gui", "gdbadapter"]
+
 [package]
 name = "katori"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+katori-gui = { path = "katori-gui" }
+gdbadapter = { path = "gdbadapter" }
