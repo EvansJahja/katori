@@ -29,6 +29,23 @@ pub fn run_gui() -> i32 {
     }
 }
 
+#[derive(Debug, Clone)]
+enum GdbCommand {
+    Continue,
+    StepOver,
+    StepInto,
+    StepOut,
+    Interrupt,
+    SetBreakpoint(String),
+    RefreshDebugInfo,
+    ReadMemory(String, u32),
+    // Session management commands
+    StartSession,
+    StopSession,
+    Attach(AttachMode, String), // mode and target (PID or host:port)
+    Detach,
+}
+
 #[derive(Debug)]
 enum DebugEvent {
     RegistersUpdated(Vec<Register>),
@@ -38,6 +55,18 @@ enum DebugEvent {
     AttachSuccess(Option<u32>), // PID for process attach, None for gdbserver
     AttachFailed(String),
     DetachSuccess,
+    // Command completion events
+    CommandCompleted(GdbCommand),
+    CommandFailed(GdbCommand, String),
+    GdbConnectionLost,
+    TargetStateChanged(TargetState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum TargetState {
+    Running,
+    Stopped,
+    Detached,
 }
 
 /// Main application state
@@ -49,11 +78,16 @@ pub struct KatoriApp {
     event_receiver: std::sync::mpsc::Receiver<DebugEvent>,
     event_sender: std::sync::mpsc::Sender<DebugEvent>,
     
+    /// Command channel for async GDB operations
+    command_sender: std::sync::mpsc::Sender<GdbCommand>,
+    command_receiver: std::sync::mpsc::Receiver<GdbCommand>,
+    
     /// Debug session state
     is_debugging: bool,
     is_attached: bool,
     current_pid: Option<u32>,
     current_host_port: String,
+    target_state: TargetState,
     
     /// UI state
     attach_mode: AttachMode,
@@ -93,15 +127,24 @@ impl KatoriApp {
     pub fn new() -> Self {
         let gdb_adapter = Arc::new(Mutex::new(GdbAdapter::new()));
         let (event_sender, event_receiver) = std::sync::mpsc::channel();
+        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        
+        // Start the background command processor
+        let adapter_clone = gdb_adapter.clone();
+        let event_sender_clone = event_sender.clone();
+        tokio::spawn(Self::command_processor_task(adapter_clone, command_receiver, event_sender_clone));
         
         Self {
             gdb_adapter,
             event_receiver,
             event_sender,
+            command_sender,
+            command_receiver: std::sync::mpsc::channel().1, // Dummy receiver since the real one is moved to the task
             is_debugging: false,
             is_attached: false,
             current_pid: None,
             current_host_port: "localhost:1337".to_string(),
+            target_state: TargetState::Detached,
             attach_mode: AttachMode::GdbServer,
             console_output: "Welcome to Katori GDB Frontend\n".to_string(),
             error_message: String::new(),
@@ -120,6 +163,245 @@ impl KatoriApp {
             breakpoint_input: String::new(),
             pid_input: String::new(),
         }
+    }
+
+    /// Background task that processes GDB commands asynchronously
+    async fn command_processor_task(
+        gdb_adapter: Arc<Mutex<GdbAdapter>>,
+        command_receiver: std::sync::mpsc::Receiver<GdbCommand>,
+        event_sender: std::sync::mpsc::Sender<DebugEvent>,
+    ) {
+        info!("Command processor task started");
+        
+        loop {
+            // Use a blocking receiver in a tokio thread to avoid busy waiting
+            match command_receiver.recv() {
+                Ok(command) => {
+                    info!("Processing command: {:?}", command);
+                    
+                    // Process the command with timeout
+                    let result = tokio::time::timeout(
+                        Self::get_command_timeout(&command),
+                        Self::process_command(gdb_adapter.clone(), command.clone())
+                    ).await;
+                    
+                    match result {
+                        Ok(Ok(())) => {
+                            info!("Command completed successfully: {:?}", command);
+                            let _ = event_sender.send(DebugEvent::CommandCompleted(command.clone()));
+                            
+                            // Auto-refresh debug info after step commands
+                            match command {
+                                GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut | GdbCommand::Interrupt => {
+                                    info!("Auto-refreshing debug info after step/interrupt command");
+                                    // Send a refresh command to get updated debug info
+                                    if let Err(e) = Self::send_refresh_debug_info_internal(
+                                        gdb_adapter.clone(), 
+                                        event_sender.clone()
+                                    ).await {
+                                        error!("Failed to auto-refresh debug info: {}", e);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            error!("Command failed: {:?} - {}", command, error);
+                            let _ = event_sender.send(DebugEvent::CommandFailed(command, error));
+                        }
+                        Err(_) => {
+                            error!("Command timed out: {:?}", command);
+                            let _ = event_sender.send(DebugEvent::CommandFailed(
+                                command, 
+                                "Command timed out".to_string()
+                            ));
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Channel closed, exit the task
+                    info!("Command processor task shutting down - channel closed");
+                    break;
+                }
+            }
+        }
+    }
+    
+    /// Get appropriate timeout for different command types
+    fn get_command_timeout(command: &GdbCommand) -> std::time::Duration {
+        match command {
+            GdbCommand::Continue => std::time::Duration::from_secs(300), // 5 minutes for continue (long running)
+            GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut => std::time::Duration::from_secs(10),
+            GdbCommand::Interrupt => std::time::Duration::from_secs(10),
+            GdbCommand::RefreshDebugInfo => std::time::Duration::from_secs(5),
+            GdbCommand::SetBreakpoint(_) => std::time::Duration::from_secs(5),
+            GdbCommand::ReadMemory(_, _) => std::time::Duration::from_secs(10),
+            GdbCommand::StartSession | GdbCommand::StopSession => std::time::Duration::from_secs(15),
+            GdbCommand::Attach(_, _) | GdbCommand::Detach => std::time::Duration::from_secs(15),
+        }
+    }
+    
+    /// Process a single GDB command
+    async fn process_command(
+        gdb_adapter: Arc<Mutex<GdbAdapter>>,
+        command: GdbCommand,
+    ) -> Result<(), String> {
+        let mut adapter = gdb_adapter.lock().await;
+        
+        match command {
+            GdbCommand::Continue => {
+                adapter.continue_execution().await
+                    .map_err(|e| format!("Continue failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::StepOver => {
+                adapter.next_instruction().await
+                    .map_err(|e| format!("Step over failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::StepInto => {
+                adapter.step_instruction().await
+                    .map_err(|e| format!("Step into failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::StepOut => {
+                adapter.step_out().await
+                    .map_err(|e| format!("Step out failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::Interrupt => {
+                adapter.interrupt().await
+                    .map_err(|e| format!("Interrupt failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::SetBreakpoint(location) => {
+                adapter.set_breakpoint(&location).await
+                    .map_err(|e| format!("Set breakpoint failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::RefreshDebugInfo => {
+                // This is a special command that sends multiple events
+                Self::process_refresh_debug_info(gdb_adapter.clone()).await
+            }
+            GdbCommand::ReadMemory(address, size) => {
+                adapter.read_memory(&address, size).await
+                    .map_err(|e| format!("Read memory failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::StartSession => {
+                adapter.start_session().await
+                    .map_err(|e| format!("Start session failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::StopSession => {
+                adapter.stop_session().await
+                    .map_err(|e| format!("Stop session failed: {}", e))?;
+                Ok(())
+            }
+            GdbCommand::Attach(mode, target) => {
+                match mode {
+                    AttachMode::GdbServer => {
+                        adapter.attach_to_gdbserver(&target).await
+                            .map_err(|e| format!("Attach to GDB server failed: {}", e))?;
+                    }
+                    AttachMode::Process => {
+                        let pid: u32 = target.parse()
+                            .map_err(|_| "Invalid PID format".to_string())?;
+                        adapter.attach_to_process(pid).await
+                            .map_err(|e| format!("Attach to process failed: {}", e))?;
+                    }
+                }
+                Ok(())
+            }
+            GdbCommand::Detach => {
+                adapter.detach().await
+                    .map_err(|e| format!("Detach failed: {}", e))?;
+                Ok(())
+            }
+        }
+    }
+    
+    /// Process debug info refresh and send individual events
+    async fn process_refresh_debug_info(
+        gdb_adapter: Arc<Mutex<GdbAdapter>>,
+    ) -> Result<(), String> {
+        // This method will be implemented in Phase 2.3
+        // For now, just return Ok
+        info!("RefreshDebugInfo command processed (placeholder)");
+        Ok(())
+    }
+    
+    /// Internal helper to send debug info refresh events
+    async fn send_refresh_debug_info_internal(
+        gdb_adapter: Arc<Mutex<GdbAdapter>>,
+        event_sender: std::sync::mpsc::Sender<DebugEvent>,
+    ) -> Result<(), String> {
+        let mut adapter = gdb_adapter.lock().await;
+        
+        // Get register names first, then register values
+        let mut register_names = Vec::new();
+        debug!("send_refresh_debug_info_internal: Getting register names...");
+        match adapter.get_register_names().await {
+            Ok(names_result) => {
+                if let Some(Value::List(names_list)) = names_result.results.get("register-names") {
+                    for (i, name_value) in names_list.iter().enumerate() {
+                        if let Some(name) = name_value.as_string() {
+                            register_names.push((i, name.to_string()));
+                        }
+                    }
+                }
+                debug!("send_refresh_debug_info_internal: Parsed {} register names", register_names.len());
+            }
+            Err(e) => {
+                error!("send_refresh_debug_info_internal: Failed to get register names: {}", e);
+            }
+        }
+        
+        // Get registers
+        debug!("send_refresh_debug_info_internal: Getting registers...");
+        match adapter.get_registers().await {
+            Ok(result) => {
+                if let Some(registers) = Self::parse_registers(&result, &register_names) {
+                    let _ = event_sender.send(DebugEvent::RegistersUpdated(registers));
+                }
+            }
+            Err(e) => {
+                error!("send_refresh_debug_info_internal: Failed to get registers: {}", e);
+            }
+        }
+        
+        // Get stack frames
+        debug!("send_refresh_debug_info_internal: Getting stack frames...");
+        match adapter.get_stack_frames().await {
+            Ok(result) => {
+                match Self::parse_stack_frames(&result) {
+                    Ok(stack_frames) => {
+                        let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
+                    }
+                    Err(e) => {
+                        error!("send_refresh_debug_info_internal: Failed to parse stack frames: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("send_refresh_debug_info_internal: Failed to get stack frames: {}", e);
+            }
+        }
+        
+        // Get assembly around current PC
+        debug!("send_refresh_debug_info_internal: Getting assembly...");
+        match adapter.disassemble_current(20).await {
+            Ok(result) => {
+                if let Some(assembly_lines) = Self::parse_assembly(&result) {
+                    let _ = event_sender.send(DebugEvent::AssemblyUpdated(assembly_lines));
+                }
+            }
+            Err(e) => {
+                error!("send_refresh_debug_info_internal: Failed to get assembly: {}", e);
+            }
+        }
+        
+        Ok(())
     }
 
     // Public methods for testing
@@ -506,7 +788,7 @@ impl KatoriApp {
     }
     
     fn step_over(&mut self) {
-        info!("step_over: Starting step over operation");
+        info!("step_over: Starting step over operation (async)");
         self.console_output.push_str("Step over\n");
         
         if !self.is_debugging || !self.is_attached {
@@ -516,83 +798,20 @@ impl KatoriApp {
             return;
         }
 
-        info!("step_over: Attempting to step over with blocking approach...");
+        info!("step_over: Sending StepOver command via channel");
         
-        // Use blocking approach - this will freeze the GUI briefly but will work
-        let rt = tokio::runtime::Handle::current();
-        info!("step_over: Got tokio runtime handle, calling block_on");
-        
-        match rt.block_on(async {
-            debug!("step_over: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let lock_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.gdb_adapter.lock()
-            ).await;
-            
-            match lock_result {
-                Ok(mut adapter) => {
-                    debug!("step_over: Adapter lock acquired, calling next_instruction()...");
-                    // Add timeout to the actual GDB command
-                    let command_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        adapter.next_instruction()
-                    ).await;
-                    
-                    match command_result {
-                        Ok(result) => {
-                            debug!("step_over: next_instruction() returned: {:?}", result);
-                            // Check if the GDB command itself succeeded
-                            match result {
-                                Ok(gdb_result) => {
-                                    // Check if GDB returned an error result
-                                    if gdb_result.class == gdbadapter::ResultClass::Error {
-                                        let error_msg = gdb_result.results.get("msg")
-                                            .and_then(|v| v.as_string())
-                                            .unwrap_or("Unknown GDB error");
-                                        error!("step_over: GDB returned error: {}", error_msg);
-                                        Err(gdbadapter::GdbError::CommandError(error_msg.to_string()))
-                                    } else {
-                                        info!("step_over: GDB command executed successfully: {:?}", gdb_result);
-                                        Ok(gdb_result)
-                                    }
-                                }
-                                Err(gdb_error) => {
-                                    error!("step_over: GDB command failed: {}", gdb_error);
-                                    Err(gdb_error)
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            error!("step_over: Timeout executing next_instruction() after 10 seconds");
-                            Err(gdbadapter::GdbError::CommunicationError("Timeout executing step command".to_string()))
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("step_over: Timeout acquiring adapter lock after 5 seconds");
-                    Err(gdbadapter::GdbError::CommunicationError("Timeout acquiring GDB adapter lock".to_string()))
-                }
-            }
-        }) {
-            Ok(_) => {
-                info!("step_over: Step over command completed successfully");
-                self.console_output.push_str("Step completed\n");
-                // Immediately refresh debug info
-                info!("step_over: Refreshing debug info after successful step");
-                self.refresh_debug_info_blocking();
-            }
-            Err(e) => {
-                error!("step_over: Step over failed with error: {}", e);
-                self.console_output.push_str(&format!("Failed to step over: {}\n", e));
-            }
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::StepOver) {
+            error!("step_over: Failed to send StepOver command: {}", e);
+            self.console_output.push_str(&format!("Failed to send step over command: {}\n", e));
+        } else {
+            info!("step_over: StepOver command sent successfully");
+            // The result will come back via the event system
         }
-        info!("step_over: Step over operation completed");
     }
     
     fn step_into(&mut self) {
-        info!("step_into: Starting step into operation");
+        info!("step_into: Starting step into operation (async)");
         self.console_output.push_str("Step into\n");
         
         if !self.is_debugging || !self.is_attached {
@@ -602,81 +821,20 @@ impl KatoriApp {
             return;
         }
 
-        info!("step_into: Attempting to step into with blocking approach...");
+        info!("step_into: Sending StepInto command via channel");
         
-        let rt = tokio::runtime::Handle::current();
-        info!("step_into: Got tokio runtime handle, calling block_on");
-        
-        match rt.block_on(async {
-            debug!("step_into: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let lock_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.gdb_adapter.lock()
-            ).await;
-            
-            match lock_result {
-                Ok(mut adapter) => {
-                    debug!("step_into: Adapter lock acquired, calling step_instruction()...");
-                    // Add timeout to the actual GDB command
-                    let command_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        adapter.step_instruction()
-                    ).await;
-                    
-                    match command_result {
-                        Ok(result) => {
-                            debug!("step_into: step_instruction() returned: {:?}", result);
-                            // Check if the GDB command itself succeeded
-                            match result {
-                                Ok(gdb_result) => {
-                                    // Check if GDB returned an error result
-                                    if gdb_result.class == gdbadapter::ResultClass::Error {
-                                        let error_msg = gdb_result.results.get("msg")
-                                            .and_then(|v| v.as_string())
-                                            .unwrap_or("Unknown GDB error");
-                                        error!("step_into: GDB returned error: {}", error_msg);
-                                        Err(gdbadapter::GdbError::CommandError(error_msg.to_string()))
-                                    } else {
-                                        info!("step_into: GDB command executed successfully: {:?}", gdb_result);
-                                        Ok(gdb_result)
-                                    }
-                                }
-                                Err(gdb_error) => {
-                                    error!("step_into: GDB command failed: {}", gdb_error);
-                                    Err(gdb_error)
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            error!("step_into: Timeout executing step_instruction() after 10 seconds");
-                            Err(gdbadapter::GdbError::CommunicationError("Timeout executing step command".to_string()))
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("step_into: Timeout acquiring adapter lock after 5 seconds");
-                    Err(gdbadapter::GdbError::CommunicationError("Timeout acquiring GDB adapter lock".to_string()))
-                }
-            }
-        }) {
-            Ok(_) => {
-                info!("step_into: Step into command completed successfully");
-                self.console_output.push_str("Step completed\n");
-                info!("step_into: Refreshing debug info after successful step");
-                self.refresh_debug_info_blocking();
-            }
-            Err(e) => {
-                error!("step_into: Step into failed with error: {}", e);
-                self.console_output.push_str(&format!("Failed to step into: {}\n", e));
-            }
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::StepInto) {
+            error!("step_into: Failed to send StepInto command: {}", e);
+            self.console_output.push_str(&format!("Failed to send step into command: {}\n", e));
+        } else {
+            info!("step_into: StepInto command sent successfully");
+            // The result will come back via the event system
         }
-        info!("step_into: Step into operation completed");
     }
     
     fn step_out(&mut self) {
-        info!("step_out: Starting step out operation");
+        info!("step_out: Starting step out operation (async)");
         self.console_output.push_str("Step out\n");
         
         if !self.is_debugging || !self.is_attached {
@@ -686,77 +844,16 @@ impl KatoriApp {
             return;
         }
 
-        info!("step_out: Attempting to step out with blocking approach...");
+        info!("step_out: Sending StepOut command via channel");
         
-        let rt = tokio::runtime::Handle::current();
-        info!("step_out: Got tokio runtime handle, calling block_on");
-        
-        match rt.block_on(async {
-            debug!("step_out: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let lock_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                self.gdb_adapter.lock()
-            ).await;
-            
-            match lock_result {
-                Ok(mut adapter) => {
-                    debug!("step_out: Adapter lock acquired, calling step_out()...");
-                    // Add timeout to the actual GDB command
-                    let command_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
-                        adapter.step_out()
-                    ).await;
-                    
-                    match command_result {
-                        Ok(result) => {
-                            debug!("step_out: step_out() returned: {:?}", result);
-                            // Check if the GDB command itself succeeded
-                            match result {
-                                Ok(gdb_result) => {
-                                    // Check if GDB returned an error result
-                                    if gdb_result.class == gdbadapter::ResultClass::Error {
-                                        let error_msg = gdb_result.results.get("msg")
-                                            .and_then(|v| v.as_string())
-                                            .unwrap_or("Unknown GDB error");
-                                        error!("step_out: GDB returned error: {}", error_msg);
-                                        Err(gdbadapter::GdbError::CommandError(error_msg.to_string()))
-                                    } else {
-                                        info!("step_out: GDB command executed successfully: {:?}", gdb_result);
-                                        Ok(gdb_result)
-                                    }
-                                }
-                                Err(gdb_error) => {
-                                    error!("step_out: GDB command failed: {}", gdb_error);
-                                    Err(gdb_error)
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            error!("step_out: Timeout executing step_out() after 10 seconds");
-                            Err(gdbadapter::GdbError::CommunicationError("Timeout executing step command".to_string()))
-                        }
-                    }
-                }
-                Err(_) => {
-                    error!("step_out: Timeout acquiring adapter lock after 5 seconds");
-                    Err(gdbadapter::GdbError::CommunicationError("Timeout acquiring GDB adapter lock".to_string()))
-                }
-            }
-        }) {
-            Ok(_) => {
-                info!("step_out: Step out command completed successfully");
-                self.console_output.push_str("Step completed\n");
-                info!("step_out: Refreshing debug info after successful step");
-                self.refresh_debug_info_blocking();
-            }
-            Err(e) => {
-                error!("step_out: Step out failed with error: {}", e);
-                self.console_output.push_str(&format!("Failed to step out: {}\n", e));
-            }
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::StepOut) {
+            error!("step_out: Failed to send StepOut command: {}", e);
+            self.console_output.push_str(&format!("Failed to send step out command: {}\n", e));
+        } else {
+            info!("step_out: StepOut command sent successfully");
+            // The result will come back via the event system
         }
-        info!("step_out: Step out operation completed");
     }
     
     // Blocking version of debug info refresh
@@ -1303,6 +1400,56 @@ impl eframe::App for KatoriApp {
                 }
                 DebugEvent::DetachSuccess => {
                     self.console_output.push_str("Successfully detached\n");
+                }
+                DebugEvent::CommandCompleted(command) => {
+                    info!("Event: Command completed: {:?}", command);
+                    // Update target state if needed
+                    match command {
+                        GdbCommand::Continue => {
+                            self.target_state = TargetState::Running;
+                            self.console_output.push_str("Target is now running\n");
+                        }
+                        GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut => {
+                            self.target_state = TargetState::Stopped;
+                            self.console_output.push_str("Step completed\n");
+                        }
+                        GdbCommand::Interrupt => {
+                            self.target_state = TargetState::Stopped;
+                            self.console_output.push_str("Target interrupted\n");
+                        }
+                        _ => {}
+                    }
+                }
+                DebugEvent::CommandFailed(command, error) => {
+                    error!("Event: Command failed: {:?} - {}", command, error);
+                    self.console_output.push_str(&format!("Command failed: {:?} - {}\n", command, error));
+                }
+                DebugEvent::GdbConnectionLost => {
+                    error!("Event: GDB connection lost");
+                    self.console_output.push_str("GDB connection lost!\n");
+                    self.is_debugging = false;
+                    self.is_attached = false;
+                    self.target_state = TargetState::Detached;
+                }
+                DebugEvent::TargetStateChanged(new_state) => {
+                    info!("Event: Target state changed to: {:?}", new_state);
+                    self.target_state = new_state.clone();
+                    match new_state {
+                        TargetState::Running => {
+                            self.console_output.push_str("Target is running\n");
+                        }
+                        TargetState::Stopped => {
+                            self.console_output.push_str("Target stopped\n");
+                            // Auto-refresh debug info when stopped
+                            if let Err(e) = self.command_sender.send(GdbCommand::RefreshDebugInfo) {
+                                error!("Failed to send RefreshDebugInfo command: {}", e);
+                            }
+                        }
+                        TargetState::Detached => {
+                            self.console_output.push_str("Target detached\n");
+                            self.clear_debug_info();
+                        }
+                    }
                 }
             }
         }

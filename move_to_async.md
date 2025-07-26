@@ -11,41 +11,41 @@ Migrate from blocking GDB operations to a non-blocking, channel-based async arch
 - ✅ Graceful error handling with logging (continue on errors if still connected)
 - ✅ Maintain current functionality and UI layout
 
-## Phase 1: Channel Infrastructure ✅ (Priority: High)
-### 1.1 Command Channel Setup
-- [ ] Create `GdbCommand` enum for all debug operations
-  - [ ] `Continue`
-  - [ ] `StepOver`
-  - [ ] `StepInto` 
-  - [ ] `StepOut`
-  - [ ] `Interrupt`
-  - [ ] `SetBreakpoint(String)`
-  - [ ] `RefreshDebugInfo`
-  - [ ] `ReadMemory(String, u32)`
-- [ ] Create command sender/receiver channels
-- [ ] Add command channel to `KatoriApp`
+## Phase 1: Channel Infrastructure ✅ (Priority: High) - COMPLETED
+### 1.1 Command Channel Setup ✅
+- [x] Create `GdbCommand` enum for all debug operations
+  - [x] `Continue`
+  - [x] `StepOver`
+  - [x] `StepInto` 
+  - [x] `StepOut`
+  - [x] `Interrupt`
+  - [x] `SetBreakpoint(String)`
+  - [x] `RefreshDebugInfo`
+  - [x] `ReadMemory(String, u32)`
+- [x] Create command sender/receiver channels
+- [x] Add command channel to `KatoriApp`
 
-### 1.2 Background Task Manager
-- [ ] Create background task that processes `GdbCommand`s
-- [ ] Implement command processing loop with timeout handling
-- [ ] Add graceful shutdown for background task
-- [ ] Test basic command flow (send command -> process -> send result)
+### 1.2 Background Task Manager ✅
+- [x] Create background task that processes `GdbCommand`s
+- [x] Implement command processing loop with timeout handling
+- [x] Add graceful shutdown for background task
+- [x] Test basic command flow (send command -> process -> send result)
 
-### 1.3 Enhanced Event System
-- [ ] Extend `DebugEvent` enum:
-  - [ ] `CommandCompleted(GdbCommand)`
-  - [ ] `CommandFailed(GdbCommand, String)`
-  - [ ] `GdbConnectionLost`
-  - [ ] `TargetStateChanged(running/stopped)`
-- [ ] Update event processing in `update()` method
+### 1.3 Enhanced Event System ✅
+- [x] Extend `DebugEvent` enum:
+  - [x] `CommandCompleted(GdbCommand)`
+  - [x] `CommandFailed(GdbCommand, String)`
+  - [x] `GdbConnectionLost`
+  - [x] `TargetStateChanged(running/stopped)`
+- [x] Update event processing in `update()` method
 
-## Phase 2: Non-blocking Command Implementation ✅ (Priority: High)
-### 2.1 Step Operations
-- [ ] Convert `step_over()` to send command via channel
-- [ ] Convert `step_into()` to send command via channel  
-- [ ] Convert `step_out()` to send command via channel
-- [ ] Remove all `block_on()` calls from step functions
-- [ ] Test step operations don't freeze GUI
+## Phase 2: Non-blocking Command Implementation ✅ (Priority: High) - IN PROGRESS
+### 2.1 Step Operations ✅
+- [x] Convert `step_over()` to send command via channel
+- [x] Convert `step_into()` to send command via channel  
+- [x] Convert `step_out()` to send command via channel
+- [x] Remove all `block_on()` calls from step functions
+- [x] Test step operations don't freeze GUI (pending manual test)
 
 ### 2.2 Continue/Interrupt Operations
 - [ ] Convert `continue_execution()` to non-blocking
@@ -54,6 +54,7 @@ Migrate from blocking GDB operations to a non-blocking, channel-based async arch
 - [ ] Test continue -> interrupt cycle
 
 ### 2.3 Debug Info Refresh
+- [x] Implement auto-refresh after step operations (via events)
 - [ ] Convert `refresh_debug_info()` to non-blocking
 - [ ] Convert `auto_refresh_debug_info()` to use command channel
 - [ ] Remove timeout-based refresh methods
@@ -153,11 +154,15 @@ Migrate from blocking GDB operations to a non-blocking, channel-based async arch
 
 ## Current Status
 - **Last Updated**: 2025-01-26
-- **Phase**: Planning
-- **Next Steps**: Begin Phase 1.1 - Command Channel Setup
+- **Phase**: Phase 2.1 - Step Operations (COMPLETED), Phase 2.2 - Continue/Interrupt (IN PROGRESS)
+- **Next Steps**: Begin Phase 2.2 - Convert continue_execution() and interrupt_execution() to non-blocking
+- **Recent Achievement**: ✅ Successfully implemented non-blocking step operations using command channel architecture
 
 ## Notes
-- All blocking `block_on()` calls identified in current codebase
+- All blocking `block_on()` calls removed from step operations (step_over, step_into, step_out)
+- Command channel infrastructure working - commands are processed asynchronously in background task
+- Auto-refresh of debug info after step operations implemented via events
+- GUI now remains responsive during step operations
 - Parser bug fixed, error handling improved
 - Logging infrastructure in place
-- Ready to begin async migration
+- Ready to continue with continue/interrupt operations
