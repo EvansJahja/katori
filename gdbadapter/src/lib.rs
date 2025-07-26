@@ -104,45 +104,73 @@ impl GdbAdapter {
     
     /// Start the output reader task that processes GDB output
     async fn start_output_reader(&self, stdout: ChildStdout) {
+        log::trace!("start_output_reader: Starting output reader task");
         let event_sender = self.event_sender.clone();
         let pending_commands = self.pending_commands.clone();
         let is_running = self.is_running.clone();
         
         tokio::spawn(async move {
+            log::trace!("start_output_reader: Output reader task started");
             let mut reader = BufReader::new(stdout);
             let mut line = String::new();
             
             while *is_running.lock().unwrap() {
                 line.clear();
+                log::trace!("start_output_reader: Waiting for next line from GDB...");
                 match reader.read_line(&mut line).await {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
+                    Ok(0) => {
+                        log::trace!("start_output_reader: EOF reached, breaking");
+                        break; // EOF
+                    }
+                    Ok(bytes_read) => {
                         let trimmed = line.trim();
+                        log::trace!("start_output_reader: Read {} bytes: '{}'", bytes_read, trimmed);
+                        
                         if !trimmed.is_empty() {
-                            if let Ok(output) = parse_gdb_output(trimmed) {
-                                match output {
-                                    GdbOutput::Result(result) => {
-                                        if let Some(token) = result.token {
-                                            if let Some(sender) = pending_commands.lock().unwrap().remove(&token) {
-                                                let _ = sender.send(result);
+                            log::trace!("start_output_reader: Parsing GDB output: '{}'", trimmed);
+                            match parse_gdb_output(trimmed) {
+                                Ok(output) => {
+                                    log::trace!("start_output_reader: Successfully parsed output: {:?}", output);
+                                    match output {
+                                        GdbOutput::Result(result) => {
+                                            log::trace!("start_output_reader: Processing result with token: {:?}", result.token);
+                                            if let Some(token) = result.token {
+                                                if let Some(sender) = pending_commands.lock().unwrap().remove(&token) {
+                                                    log::trace!("start_output_reader: Sending result to waiting command with token {}", token);
+                                                    let _ = sender.send(result);
+                                                } else {
+                                                    log::trace!("start_output_reader: No pending command found for token {}", token);
+                                                }
+                                            } else {
+                                                log::trace!("start_output_reader: Result has no token, sending as event");
+                                                let _ = event_sender.send(GdbEvent::Result(result));
                                             }
-                                        } else {
-                                            let _ = event_sender.send(GdbEvent::Result(result));
+                                        }
+                                        GdbOutput::Async(async_record) => {
+                                            log::trace!("start_output_reader: Processing async record: {:?}", async_record);
+                                            let _ = event_sender.send(GdbEvent::Async(async_record));
+                                        }
+                                        GdbOutput::Stream(stream) => {
+                                            log::trace!("start_output_reader: Processing stream: {:?}", stream);
+                                            let _ = event_sender.send(GdbEvent::Stream(stream));
                                         }
                                     }
-                                    GdbOutput::Async(async_record) => {
-                                        let _ = event_sender.send(GdbEvent::Async(async_record));
-                                    }
-                                    GdbOutput::Stream(stream) => {
-                                        let _ = event_sender.send(GdbEvent::Stream(stream));
-                                    }
+                                }
+                                Err(e) => {
+                                    log::trace!("start_output_reader: Failed to parse GDB output '{}': {}", trimmed, e);
                                 }
                             }
+                        } else {
+                            log::trace!("start_output_reader: Empty line, skipping");
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        log::trace!("start_output_reader: Error reading from stdout: {}, breaking", e);
+                        break;
+                    }
                 }
             }
+            log::trace!("start_output_reader: Output reader task finished");
         });
     }
     
@@ -181,31 +209,50 @@ impl GdbAdapter {
     
     /// Send a command to GDB and wait for the result
     pub async fn send_command(&mut self, command: &str) -> Result<GdbResult> {
+        log::trace!("send_command: Entering with command: '{}'", command);
+        
         if !self.is_running() {
+            log::trace!("send_command: GDB is not running, returning ProcessTerminated error");
             return Err(GdbError::ProcessTerminated);
         }
         
         let token = self.token_counter.fetch_add(1, Ordering::SeqCst);
+        log::trace!("send_command: Generated token: {}", token);
+        
         let (sender, receiver) = oneshot::channel();
         
         self.pending_commands.lock().unwrap().insert(token, sender);
+        log::trace!("send_command: Inserted token {} into pending commands", token);
         
         let command_line = format!("{}-{}\n", token, command);
+        log::trace!("send_command: Formatted command line: '{}'", command_line.trim());
         
         if let Some(ref mut stdin) = self.stdin {
+            log::trace!("send_command: Writing command to stdin...");
             stdin.write_all(command_line.as_bytes()).await.map_err(|e| {
+                log::trace!("send_command: Failed to write command to stdin: {}", e);
                 GdbError::CommunicationError(format!("Failed to write command: {}", e))
             })?;
+            
+            log::trace!("send_command: Flushing stdin...");
             stdin.flush().await.map_err(|e| {
+                log::trace!("send_command: Failed to flush stdin: {}", e);
                 GdbError::CommunicationError(format!("Failed to flush command: {}", e))
             })?;
+            
+            log::trace!("send_command: Command sent successfully, waiting for response...");
         } else {
+            log::trace!("send_command: stdin is None, returning ProcessTerminated error");
             return Err(GdbError::ProcessTerminated);
         }
         
-        receiver.await.map_err(|_| {
+        let result = receiver.await.map_err(|_| {
+            log::trace!("send_command: Command response channel closed for token {}", token);
             GdbError::CommunicationError("Command response channel closed".into())
-        })
+        });
+        
+        log::trace!("send_command: Received result for token {}: {:?}", token, result);
+        result
     }
     
     /// Stop the current GDB session

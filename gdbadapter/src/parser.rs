@@ -9,26 +9,36 @@ use std::collections::HashMap;
 /// Parse a line of GDB/MI output
 pub fn parse_gdb_output(line: &str) -> Result<GdbOutput, String> {
     let line = line.trim();
+    log::trace!("parse_gdb_output: Parsing line: '{}'", line);
     
     if line.is_empty() || line == "(gdb)" {
+        log::trace!("parse_gdb_output: Empty or prompt line, skipping");
         return Err("Empty or prompt line".into());
     }
     
     // Check for stream records first (single character prefix)
     if let Some(stream) = parse_stream_record(line) {
+        log::trace!("parse_gdb_output: Parsed as stream record: {:?}", stream);
         return Ok(GdbOutput::Stream(stream));
     }
     
     // Check for async records (* or =)
     if line.starts_with('*') || line.starts_with('=') {
-        return parse_async_record(line).map(GdbOutput::Async);
+        log::trace!("parse_gdb_output: Parsing as async record");
+        let result = parse_async_record(line).map(GdbOutput::Async);
+        log::trace!("parse_gdb_output: Async record result: {:?}", result);
+        return result;
     }
     
     // Check for result records (^)
     if line.starts_with('^') || line.chars().any(|c| c == '^') {
-        return parse_result_record(line).map(GdbOutput::Result);
+        log::trace!("parse_gdb_output: Parsing as result record");
+        let result = parse_result_record(line).map(GdbOutput::Result);
+        log::trace!("parse_gdb_output: Result record result: {:?}", result);
+        return result;
     }
     
+    log::trace!("parse_gdb_output: Unknown format for line: '{}'", line);
     Err(format!("Unknown GDB/MI output format: {}", line))
 }
 

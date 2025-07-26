@@ -7,5 +7,7 @@ edition = "2021"
 egui = "0.27"
 eframe = { version = "0.27", default-features = true, features = ["default_fonts"] }
 tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+simple_logger = "4.3"
 
 gdbadapter = { path = "../gdbadapter" }

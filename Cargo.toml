@@ -9,3 +9,5 @@ edition = "2021"
 [dependencies]
 katori-gui = { path = "katori-gui" }
 gdbadapter = { path = "gdbadapter" }
+log = "0.4"
+simple_logger = "4.3"
