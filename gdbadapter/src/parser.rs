@@ -249,8 +249,38 @@ fn parse_value(chars: &mut std::iter::Peekable<std::str::Chars>) -> Result<Value
             let mut list = Vec::new();
             
             while chars.peek() != Some(&']') && chars.peek().is_some() {
-                let value = parse_value(chars)?;
-                list.push(value);
+                // Check if this looks like a key=value pair
+                let mut temp_chars = chars.clone();
+                let mut has_equals = false;
+                
+                // Look ahead to see if there's an equals sign before a value delimiter
+                while let Some(&ch) = temp_chars.peek() {
+                    if ch == '=' {
+                        has_equals = true;
+                        break;
+                    } else if ch == ',' || ch == ']' || ch == '{' || ch == '[' || ch == '"' {
+                        break;
+                    }
+                    temp_chars.next();
+                }
+                
+                if has_equals {
+                    // Parse as key=value pair and store as a tuple
+                    let key = parse_identifier(chars)?;
+                    
+                    if chars.next() != Some('=') {
+                        return Err("Expected '=' in list key-value pair".into());
+                    }
+                    
+                    let value = parse_value(chars)?;
+                    let mut tuple = HashMap::new();
+                    tuple.insert(key, value);
+                    list.push(Value::Tuple(tuple));
+                } else {
+                    // Parse as regular value
+                    let value = parse_value(chars)?;
+                    list.push(value);
+                }
                 
                 if chars.peek() == Some(&',') {
                     chars.next();
@@ -393,5 +423,25 @@ mod tests {
         let groups = results.get("thread-groups").unwrap().as_list().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].as_string(), Some("i1"));
+    }
+
+    #[test]
+    fn test_parse_stack_frame() {
+        // This is the exact output from the GDB logs
+        let input = "stack=[frame={level=\"0\",addr=\"0x00000000\",func=\"??\",arch=\"armv4t\"}]";
+        let results = parse_results(input).unwrap();
+        
+        assert_eq!(results.len(), 1);
+        let stack = results.get("stack").unwrap().as_list().unwrap();
+        assert_eq!(stack.len(), 1);
+        
+        // The list contains a tuple with key "frame"
+        let frame_tuple = stack[0].as_tuple().unwrap();
+        let frame = frame_tuple.get("frame").unwrap().as_tuple().unwrap();
+        
+        assert_eq!(frame.get("level").unwrap().as_string(), Some("0"));
+        assert_eq!(frame.get("addr").unwrap().as_string(), Some("0x00000000"));
+        assert_eq!(frame.get("func").unwrap().as_string(), Some("??"));
+        assert_eq!(frame.get("arch").unwrap().as_string(), Some("armv4t"));
     }
 }
