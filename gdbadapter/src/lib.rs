@@ -306,6 +306,10 @@ impl GdbAdapter {
         } 
         result
     }
+
+    pub fn get_event_receiver(&self) -> Arc<Mutex<mpsc::UnboundedReceiver<GdbEvent>>> {
+        self.event_receiver.clone()
+    }
     
     /// Stop the current GDB session
     pub async fn stop_session(&mut self) -> Result<()> {
@@ -491,15 +495,6 @@ impl GdbAdapter {
         *self.is_running.lock().unwrap()
     }
     
-    /// Get the next event from GDB (non-blocking)
-    pub fn try_recv_event(&self) -> Option<GdbEvent> {
-        self.event_receiver.lock().unwrap().try_recv().ok()
-    }
-    
-    /// Get a reference to the event receiver for setting up GUI event handling
-    pub fn get_event_receiver(&self) -> Arc<Mutex<mpsc::UnboundedReceiver<GdbEvent>>> {
-        self.event_receiver.clone()
-    }
 }
 
 impl Drop for GdbAdapter {

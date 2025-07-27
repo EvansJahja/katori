@@ -1,5 +1,5 @@
 use eframe::egui;
-use gdbadapter::{GdbAdapter, Register, AssemblyLine, StackFrame, Value};
+use gdbadapter::{AssemblyLine, GdbAdapter, GdbEvent, Register, StackFrame, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use log::{info, warn, error, debug};
@@ -203,6 +203,14 @@ impl KatoriApp {
                     // Channel closed, exit the task
                     info!("Command processor task shutting down - channel closed");
                     break;
+                }
+            }
+
+            while let Ok(event) = gdb_adapter.lock().await.get_event_receiver().lock().unwrap().try_recv() {
+                log::debug!("Command processor task received GDB event: {event:?}");
+                // Handle the GDB event (e.g., update UI)
+                if let GdbEvent::Async(record) = event {
+                    log::debug!("Processing async record: {:?}", record);
                 }
             }
         }
