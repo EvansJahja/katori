@@ -19,7 +19,7 @@ pub fn run_gui() -> i32 {
     ) {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("Error running GUI: {}", e);
+            eprintln!("Error running GUI: {e}");
             1
         }
     }
@@ -171,7 +171,7 @@ impl KatoriApp {
             // Use a blocking receiver in a tokio thread to avoid busy waiting
             match command_receiver.recv() {
                 Ok(command) => {
-                    info!("Processing command: {:?}", command);
+                    info!("Processing command: {command:?}");
                     
                     // Process the command with timeout
                     let result = tokio::time::timeout(
@@ -181,7 +181,7 @@ impl KatoriApp {
                     
                     match result {
                         Ok(Ok(())) => {
-                            info!("Command completed successfully: {:?}", command);
+                            info!("Command completed successfully: {command:?}");
                             let _ = event_sender.send(DebugEvent::CommandCompleted(command.clone()));
                             
                             // Auto-refresh debug info after step commands
@@ -193,18 +193,18 @@ impl KatoriApp {
                                         gdb_adapter.clone(), 
                                         event_sender.clone()
                                     ).await {
-                                        error!("Failed to auto-refresh debug info: {}", e);
+                                        error!("Failed to auto-refresh debug info: {e}");
                                     }
                                 }
                                 _ => {}
                             }
                         }
                         Ok(Err(error)) => {
-                            error!("Command failed: {:?} - {}", command, error);
+                            error!("Command failed: {command:?} - {error}");
                             let _ = event_sender.send(DebugEvent::CommandFailed(command, error));
                         }
                         Err(_) => {
-                            error!("Command timed out: {:?}", command);
+                            error!("Command timed out: {command:?}");
                             let _ = event_sender.send(DebugEvent::CommandFailed(
                                 command, 
                                 "Command timed out".to_string()
@@ -246,73 +246,73 @@ impl KatoriApp {
         match command {
             GdbCommand::Continue => {
                 adapter.continue_execution().await
-                    .map_err(|e| format!("Continue failed: {}", e))?;
+                    .map_err(|e| format!("Continue failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::StepOver => {
                 adapter.next_instruction().await
-                    .map_err(|e| format!("Step over failed: {}", e))?;
+                    .map_err(|e| format!("Step over failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::StepInto => {
                 adapter.step_instruction().await
-                    .map_err(|e| format!("Step into failed: {}", e))?;
+                    .map_err(|e| format!("Step into failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::StepOut => {
                 adapter.step_out().await
-                    .map_err(|e| format!("Step out failed: {}", e))?;
+                    .map_err(|e| format!("Step out failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::Interrupt => {
                 adapter.interrupt().await
-                    .map_err(|e| format!("Interrupt failed: {}", e))?;
+                    .map_err(|e| format!("Interrupt failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::SetBreakpoint(location) => {
                 adapter.set_breakpoint(&location).await
-                    .map_err(|e| format!("Set breakpoint failed: {}", e))?;
+                    .map_err(|e| format!("Set breakpoint failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::RefreshDebugInfo => {
                 // This is a special command that sends multiple events
                 Self::send_refresh_debug_info_internal(gdb_adapter.clone(), event_sender).await
-                    .map_err(|e| format!("RefreshDebugInfo failed: {}", e))?;
+                    .map_err(|e| format!("RefreshDebugInfo failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::ReadMemory(address, size) => {
                 adapter.read_memory(&address, size).await
-                    .map_err(|e| format!("Read memory failed: {}", e))?;
+                    .map_err(|e| format!("Read memory failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::StartSession => {
                 adapter.start_session().await
-                    .map_err(|e| format!("Start session failed: {}", e))?;
+                    .map_err(|e| format!("Start session failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::StopSession => {
                 adapter.stop_session().await
-                    .map_err(|e| format!("Stop session failed: {}", e))?;
+                    .map_err(|e| format!("Stop session failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::Attach(mode, target) => {
                 match mode {
                     AttachMode::GdbServer => {
                         adapter.attach_to_gdbserver(&target).await
-                            .map_err(|e| format!("Attach to GDB server failed: {}", e))?;
+                            .map_err(|e| format!("Attach to GDB server failed: {e}"))?;
                     }
                     AttachMode::Process => {
                         let pid: u32 = target.parse()
                             .map_err(|_| "Invalid PID format".to_string())?;
                         adapter.attach_to_process(pid).await
-                            .map_err(|e| format!("Attach to process failed: {}", e))?;
+                            .map_err(|e| format!("Attach to process failed: {e}"))?;
                     }
                 }
                 Ok(())
             }
             GdbCommand::Detach => {
                 adapter.detach().await
-                    .map_err(|e| format!("Detach failed: {}", e))?;
+                    .map_err(|e| format!("Detach failed: {e}"))?;
                 Ok(())
             }
         }
@@ -340,7 +340,7 @@ impl KatoriApp {
                 debug!("send_refresh_debug_info_internal: Parsed {} register names", register_names.len());
             }
             Err(e) => {
-                error!("send_refresh_debug_info_internal: Failed to get register names: {}", e);
+                error!("send_refresh_debug_info_internal: Failed to get register names: {e}");
             }
         }
         
@@ -353,7 +353,7 @@ impl KatoriApp {
                 }
             }
             Err(e) => {
-                error!("send_refresh_debug_info_internal: Failed to get registers: {}", e);
+                error!("send_refresh_debug_info_internal: Failed to get registers: {e}");
             }
         }
         
@@ -366,12 +366,12 @@ impl KatoriApp {
                         let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
                     }
                     Err(e) => {
-                        error!("send_refresh_debug_info_internal: Failed to parse stack frames: {}", e);
+                        error!("send_refresh_debug_info_internal: Failed to parse stack frames: {e}");
                     }
                 }
             }
             Err(e) => {
-                error!("send_refresh_debug_info_internal: Failed to get stack frames: {}", e);
+                error!("send_refresh_debug_info_internal: Failed to get stack frames: {e}");
             }
         }
         
@@ -384,7 +384,7 @@ impl KatoriApp {
                 }
             }
             Err(e) => {
-                error!("send_refresh_debug_info_internal: Failed to get assembly: {}", e);
+                error!("send_refresh_debug_info_internal: Failed to get assembly: {e}");
             }
         }
         
@@ -518,7 +518,7 @@ impl KatoriApp {
                     console_sender.send("GDB session started successfully\n".to_string()).ok();
                 }
                 Err(e) => {
-                    console_sender.send(format!("Failed to start GDB: {}\n", e)).ok();
+                    console_sender.send(format!("Failed to start GDB: {e}\n")).ok();
                 }
             }
         });
@@ -537,7 +537,7 @@ impl KatoriApp {
                     console_sender.send("GDB session stopped\n".to_string()).ok();
                 }
                 Err(e) => {
-                    console_sender.send(format!("Failed to stop session: {}\n", e)).ok();
+                    console_sender.send(format!("Failed to stop session: {e}\n")).ok();
                 }
             }
         });
@@ -554,7 +554,9 @@ impl KatoriApp {
         let (sender, _receiver) = std::sync::mpsc::channel();
         // In a real implementation, you'd store the receiver and process messages in update()
         sender
-    }    fn attach_to_target(&mut self) {
+    }  
+
+    fn attach_to_target(&mut self) {
         self.console_output.push_str("Starting attachment process...\n");
         
         // Clone data needed for async operations
@@ -568,7 +570,7 @@ impl KatoriApp {
         match attach_mode {
             AttachMode::Process => {
                 if let Ok(pid) = pid_input.parse::<u32>() {
-                    self.console_output.push_str(&format!("Attaching to process {}...\n", pid));
+                    self.console_output.push_str(&format!("Attaching to process {pid}...\n"));
                 } else {
                     self.console_output.push_str("Invalid PID format\n");
                     self.error_message = "Invalid PID format".to_string();
@@ -576,7 +578,7 @@ impl KatoriApp {
                 }
             }
             AttachMode::GdbServer => {
-                self.console_output.push_str(&format!("Attaching to GDB server at {}...\n", host_port));
+                self.console_output.push_str(&format!("Attaching to GDB server at {host_port}...\n"));
             }
         }
 
@@ -593,7 +595,7 @@ impl KatoriApp {
             };
             
             if let Err(e) = start_result {
-                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to start GDB: {}", e)));
+                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to start GDB: {e}")));
                 return;
             }
 
@@ -610,7 +612,7 @@ impl KatoriApp {
                                 let _ = event_sender.send(DebugEvent::AttachSuccess(Some(pid)));
                             }
                             Err(e) => {
-                                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to attach to process: {}", e)));
+                                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to attach to process: {e}")));
                             }
                         }
                     }
@@ -626,7 +628,7 @@ impl KatoriApp {
                             let _ = event_sender.send(DebugEvent::AttachSuccess(None));
                         }
                         Err(e) => {
-                            let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to connect to GDB server: {}", e)));
+                            let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to connect to GDB server: {e}")));
                         }
                     }
                 }
@@ -651,7 +653,7 @@ impl KatoriApp {
                     let _ = event_sender.send(DebugEvent::DetachSuccess);
                 }
                 Err(e) => {
-                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to detach: {}\n", e)));
+                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to detach: {e}\n")));
                 }
             }
         });
@@ -682,10 +684,10 @@ impl KatoriApp {
                     adapter.set_breakpoint(&location).await
                 } {
                     Ok(_) => {
-                        info!("Breakpoint set successfully at {}", location);
+                        info!("Breakpoint set successfully at {location}");
                     }
                     Err(e) => {
-                        error!("Failed to set breakpoint: {}", e);
+                        error!("Failed to set breakpoint: {e}");
                     }
                 }
             });
@@ -707,8 +709,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::Continue) {
-            error!("continue_execution: Failed to send Continue command: {}", e);
-            self.console_output.push_str(&format!("Failed to send continue command: {}\n", e));
+            error!("continue_execution: Failed to send Continue command: {e}");
+            self.console_output.push_str(&format!("Failed to send continue command: {e}\n"));
         } else {
             info!("continue_execution: Continue command sent successfully");
             // The result will come back via the event system
@@ -732,8 +734,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::StepOver) {
-            error!("step_over: Failed to send StepOver command: {}", e);
-            self.console_output.push_str(&format!("Failed to send step over command: {}\n", e));
+            error!("step_over: Failed to send StepOver command: {e}");
+            self.console_output.push_str(&format!("Failed to send step over command: {e}\n"));
         } else {
             info!("step_over: StepOver command sent successfully");
             // The result will come back via the event system
@@ -755,8 +757,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::StepInto) {
-            error!("step_into: Failed to send StepInto command: {}", e);
-            self.console_output.push_str(&format!("Failed to send step into command: {}\n", e));
+            error!("step_into: Failed to send StepInto command: {e}");
+            self.console_output.push_str(&format!("Failed to send step into command: {e}\n"));
         } else {
             info!("step_into: StepInto command sent successfully");
             // The result will come back via the event system
@@ -778,8 +780,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::StepOut) {
-            error!("step_out: Failed to send StepOut command: {}", e);
-            self.console_output.push_str(&format!("Failed to send step out command: {}\n", e));
+            error!("step_out: Failed to send StepOut command: {e}");
+            self.console_output.push_str(&format!("Failed to send step out command: {e}\n"));
         } else {
             info!("step_out: StepOut command sent successfully");
             // The result will come back via the event system
@@ -801,8 +803,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::Interrupt) {
-            error!("interrupt_execution: Failed to send Interrupt command: {}", e);
-            self.console_output.push_str(&format!("Failed to send interrupt command: {}\n", e));
+            error!("interrupt_execution: Failed to send Interrupt command: {e}");
+            self.console_output.push_str(&format!("Failed to send interrupt command: {e}\n"));
         } else {
             info!("interrupt_execution: Interrupt command sent successfully");
             // The result will come back via the event system
@@ -824,8 +826,8 @@ impl KatoriApp {
         
         // Send command via channel - non-blocking
         if let Err(e) = self.command_sender.send(GdbCommand::RefreshDebugInfo) {
-            error!("refresh_debug_info: Failed to send RefreshDebugInfo command: {}", e);
-            self.console_output.push_str(&format!("Failed to send refresh command: {}\n", e));
+            error!("refresh_debug_info: Failed to send RefreshDebugInfo command: {e}");
+            self.console_output.push_str(&format!("Failed to send refresh command: {e}\n"));
         } else {
             info!("refresh_debug_info: RefreshDebugInfo command sent successfully");
             // The result will come back via the event system
@@ -845,10 +847,10 @@ impl KatoriApp {
                 adapter.read_memory(&address, size).await
             } {
                 Ok(result) => {
-                    info!("Memory read successfully: {:?}", result);
+                    info!("Memory read successfully: {result:?}");
                 }
                 Err(e) => {
-                    error!("Failed to read memory: {}", e);
+                    error!("Failed to read memory: {e}");
                 }
             }
         });
@@ -892,7 +894,7 @@ impl KatoriApp {
                             }
                         }
                         Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get register names: {}", e);
+                            error!("auto_refresh_debug_info: Failed to get register names: {e}");
                         }
                     }
                     
@@ -905,8 +907,8 @@ impl KatoriApp {
                             }
                         }
                         Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get registers: {}", e);
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get registers: {}\n", e)));
+                            error!("auto_refresh_debug_info: Failed to get registers: {e}");
+                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get registers: {e}\n")));
                         }
                     }
                     
@@ -919,14 +921,14 @@ impl KatoriApp {
                                     let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
                                 }
                                 Err(e) => {
-                                    error!("auto_refresh_debug_info: Failed to parse stack frames: {}", e);
-                                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to parse stack frames: {}\n", e)));
+                                    error!("auto_refresh_debug_info: Failed to parse stack frames: {e}");
+                                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to parse stack frames: {e}\n")));
                                 }
                             }
                         }
                         Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get stack frames: {}", e);
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get stack frames: {}\n", e)));
+                            error!("auto_refresh_debug_info: Failed to get stack frames: {e}");
+                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get stack frames: {e}\n")));
                         }
                     }
                     
@@ -939,8 +941,8 @@ impl KatoriApp {
                             }
                         }
                         Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get assembly: {}", e);
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get assembly: {}\n", e)));
+                            error!("auto_refresh_debug_info: Failed to get assembly: {e}");
+                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get assembly: {e}\n")));
                         }
                     }
                     
@@ -978,7 +980,7 @@ impl KatoriApp {
                     let name = register_names.iter()
                         .find(|(i, _)| *i == number as usize)
                         .map(|(_, name)| name.clone())
-                        .unwrap_or_else(|| format!("r{}", number));
+                        .unwrap_or_else(|| format!("r{number}"));
                     
                     registers.push(Register {
                         number,
@@ -1009,7 +1011,7 @@ impl KatoriApp {
                         if let Some(nested_tuple) = nested_frame.as_tuple() {
                             nested_tuple
                         } else {
-                            return Err(format!("Frame {} has invalid nested frame structure", index));
+                            return Err(format!("Frame {index} has invalid nested frame structure"));
                         }
                     } else {
                         frame_tuple
@@ -1018,11 +1020,11 @@ impl KatoriApp {
                     let level = actual_frame.get("level")
                         .and_then(|v| v.as_string())
                         .and_then(|s| s.parse().ok())
-                        .ok_or_else(|| format!("Frame {} missing or invalid 'level' field", index))?;
+                        .ok_or_else(|| format!("Frame {index} missing or invalid 'level' field"))?;
                     
                     let address = actual_frame.get("addr")
                         .and_then(|v| v.as_string())
-                        .ok_or_else(|| format!("Frame {} missing 'addr' field", index))?
+                        .ok_or_else(|| format!("Frame {index} missing 'addr' field"))?
                         .to_string();
                     
                     let function = actual_frame.get("func").and_then(|v| v.as_string()).map(|s| s.to_string());
@@ -1041,7 +1043,7 @@ impl KatoriApp {
                         arch,
                     });
                 } else {
-                    return Err(format!("Frame {} is not a tuple structure", index));
+                    return Err(format!("Frame {index} is not a tuple structure"));
                 }
             }
             
@@ -1112,7 +1114,7 @@ impl eframe::App for KatoriApp {
                     self.is_debugging = true;
                     if let Some(pid) = pid {
                         self.current_pid = Some(pid);
-                        self.console_output.push_str(&format!("Successfully attached to process {}\n", pid));
+                        self.console_output.push_str(&format!("Successfully attached to process {pid}\n"));
                     } else {
                         self.console_output.push_str("Successfully attached to GDB server\n");
                     }
@@ -1120,14 +1122,14 @@ impl eframe::App for KatoriApp {
                     self.auto_refresh_debug_info();
                 }
                 DebugEvent::AttachFailed(error) => {
-                    self.console_output.push_str(&format!("Attach failed: {}\n", error));
-                    self.error_message = format!("Attach failed: {}", error);
+                    self.console_output.push_str(&format!("Attach failed: {error}\n"));
+                    self.error_message = format!("Attach failed: {error}");
                 }
                 DebugEvent::DetachSuccess => {
                     self.console_output.push_str("Successfully detached\n");
                 }
                 DebugEvent::CommandCompleted(command) => {
-                    info!("Event: Command completed: {:?}", command);
+                    info!("Event: Command completed: {command:?}");
                     // Update target state if needed
                     match command {
                         GdbCommand::Continue => {
@@ -1146,8 +1148,8 @@ impl eframe::App for KatoriApp {
                     }
                 }
                 DebugEvent::CommandFailed(command, error) => {
-                    error!("Event: Command failed: {:?} - {}", command, error);
-                    self.console_output.push_str(&format!("Command failed: {:?} - {}\n", command, error));
+                    error!("Event: Command failed: {command:?} - {error}");
+                    self.console_output.push_str(&format!("Command failed: {command:?} - {error}\n"));
                 }
                 DebugEvent::GdbConnectionLost => {
                     error!("Event: GDB connection lost");
@@ -1157,7 +1159,7 @@ impl eframe::App for KatoriApp {
                     self.target_state = TargetState::Detached;
                 }
                 DebugEvent::TargetStateChanged(new_state) => {
-                    info!("Event: Target state changed to: {:?}", new_state);
+                    info!("Event: Target state changed to: {new_state:?}");
                     self.target_state = new_state.clone();
                     match new_state {
                         TargetState::Running => {
@@ -1167,7 +1169,7 @@ impl eframe::App for KatoriApp {
                             self.console_output.push_str("Target stopped\n");
                             // Auto-refresh debug info when stopped
                             if let Err(e) = self.command_sender.send(GdbCommand::RefreshDebugInfo) {
-                                error!("Failed to send RefreshDebugInfo command: {}", e);
+                                error!("Failed to send RefreshDebugInfo command: {e}");
                             }
                         }
                         TargetState::Detached => {
@@ -1431,7 +1433,7 @@ impl eframe::App for KatoriApp {
                                     let mut ascii_str = String::new();
                                     
                                     for byte in chunk {
-                                        hex_str.push_str(&format!("{:02x} ", byte));
+                                        hex_str.push_str(&format!("{byte:02x} "));
                                         if byte.is_ascii_graphic() {
                                             ascii_str.push(*byte as char);
                                         } else {
