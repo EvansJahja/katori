@@ -51,6 +51,8 @@ enum DebugEvent {
     AttachSuccess(Option<u32>), // PID for process attach, None for gdbserver
     AttachFailed(String),
     DetachSuccess,
+    MemoryRead(Vec<u8>),
+    MemoryReadFailed(String),
     // Command completion events
     CommandCompleted(GdbCommand),
     CommandFailed(GdbCommand, String),
@@ -171,7 +173,7 @@ impl KatoriApp {
             // Use a blocking receiver in a tokio thread to avoid busy waiting
             match command_receiver.recv() {
                 Ok(command) => {
-                    info!("Processing command: {command:?}");
+                    log::debug!("Command processor received command: {:?}", command);
                     
                     // Process the command with timeout
                     let result = tokio::time::timeout(
@@ -183,21 +185,6 @@ impl KatoriApp {
                         Ok(Ok(())) => {
                             info!("Command completed successfully: {command:?}");
                             let _ = event_sender.send(DebugEvent::CommandCompleted(command.clone()));
-                            
-                            // Auto-refresh debug info after step commands
-                            match command {
-                                GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut | GdbCommand::Interrupt => {
-                                    info!("Auto-refreshing debug info after step/interrupt command");
-                                    // Send a refresh command to get updated debug info
-                                    if let Err(e) = Self::send_refresh_debug_info_internal(
-                                        gdb_adapter.clone(), 
-                                        event_sender.clone()
-                                    ).await {
-                                        error!("Failed to auto-refresh debug info: {e}");
-                                    }
-                                }
-                                _ => {}
-                            }
                         }
                         Ok(Err(error)) => {
                             error!("Command failed: {command:?} - {error}");
@@ -242,6 +229,7 @@ impl KatoriApp {
         event_sender: std::sync::mpsc::Sender<DebugEvent>,
     ) -> Result<(), String> {
         let mut adapter = gdb_adapter.lock().await;
+        log::debug!("Processing command: {:?}", command);
         
         match command {
             GdbCommand::Continue => {
@@ -276,13 +264,31 @@ impl KatoriApp {
             }
             GdbCommand::RefreshDebugInfo => {
                 // This is a special command that sends multiple events
-                Self::send_refresh_debug_info_internal(gdb_adapter.clone(), event_sender).await
+                log::debug!("Refreshing debug info");
+                Self::send_refresh_debug_info_internal(adapter, event_sender).await
                     .map_err(|e| format!("RefreshDebugInfo failed: {e}"))?;
                 Ok(())
             }
             GdbCommand::ReadMemory(address, size) => {
-                adapter.read_memory(&address, size).await
-                    .map_err(|e| format!("Read memory failed: {e}"))?;
+                match adapter.read_memory(&address, size).await {
+                    Ok(result) => {
+                        info!("Memory read command completed: {result:?}");
+                        // Try to extract memory data from the result
+                        // The data-read-memory-bytes command typically returns memory data in the results
+                        if let Some(_memory_value) = result.results.get("memory") {
+                            // For now, send the raw result - we'll need to parse this properly later
+                            // TODO: Parse memory data properly from GDB MI format
+                            let dummy_data = vec![0u8; size as usize]; // Placeholder
+                            let _ = event_sender.send(DebugEvent::MemoryRead(dummy_data));
+                        } else {
+                            let _ = event_sender.send(DebugEvent::MemoryReadFailed("No memory data in response".to_string()));
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to read memory: {e}");
+                        let _ = event_sender.send(DebugEvent::MemoryReadFailed(e.to_string()));
+                    }
+                }
                 Ok(())
             }
             GdbCommand::StartSession => {
@@ -296,16 +302,26 @@ impl KatoriApp {
                 Ok(())
             }
             GdbCommand::Attach(mode, target) => {
+                // Start GDB session first if not already running
+                if !adapter.is_running() {
+                    adapter.start_session().await
+                        .map_err(|e| format!("Failed to start GDB: {e}"))?;
+                }
+                
                 match mode {
                     AttachMode::GdbServer => {
                         adapter.attach_to_gdbserver(&target).await
                             .map_err(|e| format!("Attach to GDB server failed: {e}"))?;
+                        // Send success event
+                        let _ = event_sender.send(DebugEvent::AttachSuccess(None));
                     }
                     AttachMode::Process => {
                         let pid: u32 = target.parse()
                             .map_err(|_| "Invalid PID format".to_string())?;
                         adapter.attach_to_process(pid).await
                             .map_err(|e| format!("Attach to process failed: {e}"))?;
+                        // Send success event
+                        let _ = event_sender.send(DebugEvent::AttachSuccess(Some(pid)));
                     }
                 }
                 Ok(())
@@ -313,6 +329,8 @@ impl KatoriApp {
             GdbCommand::Detach => {
                 adapter.detach().await
                     .map_err(|e| format!("Detach failed: {e}"))?;
+                // Send success event
+                let _ = event_sender.send(DebugEvent::DetachSuccess);
                 Ok(())
             }
         }
@@ -320,11 +338,9 @@ impl KatoriApp {
     
     /// Internal helper to send debug info refresh events
     async fn send_refresh_debug_info_internal(
-        gdb_adapter: Arc<Mutex<GdbAdapter>>,
+        mut adapter: tokio::sync::MutexGuard<'_, GdbAdapter>,
         event_sender: std::sync::mpsc::Sender<DebugEvent>,
     ) -> Result<(), String> {
-        let mut adapter = gdb_adapter.lock().await;
-        
         // Get register names first, then register values
         let mut register_names = Vec::new();
         debug!("send_refresh_debug_info_internal: Getting register names...");
@@ -497,50 +513,38 @@ impl KatoriApp {
     pub fn is_console_visible(&self) -> bool {
         self.show_console
     }
-
-    // Async version for testing
-    pub async fn start_gdb_session_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = self.gdb_adapter.lock().await;
-        adapter.start_session().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-    }
     
     pub fn start_gdb_session(&mut self) {
+        info!("start_gdb_session: Starting GDB session operation");
         self.console_output.push_str("Starting GDB session...\n");
         self.is_debugging = true;
         
-        let adapter = self.gdb_adapter.clone();
-        let console_sender = self.create_console_sender();
+        info!("start_gdb_session: Sending StartSession command via channel");
         
-        tokio::spawn(async move {
-            let mut adapter = adapter.lock().await;
-            match adapter.start_session().await {
-                Ok(_) => {
-                    console_sender.send("GDB session started successfully\n".to_string()).ok();
-                }
-                Err(e) => {
-                    console_sender.send(format!("Failed to start GDB: {e}\n")).ok();
-                }
-            }
-        });
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::StartSession) {
+            error!("start_gdb_session: Failed to send StartSession command: {e}");
+            self.console_output.push_str(&format!("Failed to send start session command: {e}\n"));
+        } else {
+            info!("start_gdb_session: StartSession command sent successfully");
+            // The result will come back via the event system
+        }
     }
 
     pub fn stop_gdb_session(&mut self) {
+        info!("stop_gdb_session: Starting stop session operation");
         self.console_output.push_str("Stopping GDB session...\n");
         
-        let adapter = self.gdb_adapter.clone();
-        let console_sender = self.create_console_sender();
+        info!("stop_gdb_session: Sending StopSession command via channel");
         
-        tokio::spawn(async move {
-            let mut adapter = adapter.lock().await;
-            match adapter.stop_session().await {
-                Ok(_) => {
-                    console_sender.send("GDB session stopped\n".to_string()).ok();
-                }
-                Err(e) => {
-                    console_sender.send(format!("Failed to stop session: {e}\n")).ok();
-                }
-            }
-        });
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::StopSession) {
+            error!("stop_gdb_session: Failed to send StopSession command: {e}");
+            self.console_output.push_str(&format!("Failed to send stop session command: {e}\n"));
+        } else {
+            info!("stop_gdb_session: StopSession command sent successfully");
+            // The result will come back via the event system
+        }
         
         // Update state immediately for UI responsiveness
         self.is_debugging = false;
@@ -557,20 +561,15 @@ impl KatoriApp {
     }  
 
     fn attach_to_target(&mut self) {
+        info!("attach_to_target: Starting attachment process");
         self.console_output.push_str("Starting attachment process...\n");
         
-        // Clone data needed for async operations
-        let adapter = self.gdb_adapter.clone();
-        let attach_mode = self.attach_mode.clone();
-        let pid_input = self.pid_input.clone();
-        let host_port = self.current_host_port.clone();
-        let event_sender = self.event_sender.clone();
-
-        // Show immediate feedback
-        match attach_mode {
+        // Show immediate feedback and validate input
+        let target = match self.attach_mode {
             AttachMode::Process => {
-                if let Ok(pid) = pid_input.parse::<u32>() {
+                if let Ok(pid) = self.pid_input.parse::<u32>() {
                     self.console_output.push_str(&format!("Attaching to process {pid}...\n"));
+                    self.pid_input.clone()
                 } else {
                     self.console_output.push_str("Invalid PID format\n");
                     self.error_message = "Invalid PID format".to_string();
@@ -578,87 +577,39 @@ impl KatoriApp {
                 }
             }
             AttachMode::GdbServer => {
-                self.console_output.push_str(&format!("Attaching to GDB server at {host_port}...\n"));
+                self.console_output.push_str(&format!("Attaching to GDB server at {}...\n", self.current_host_port));
+                self.current_host_port.clone()
             }
+        };
+
+        info!("attach_to_target: Sending Attach command via channel");
+        
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::Attach(self.attach_mode.clone(), target)) {
+            error!("attach_to_target: Failed to send Attach command: {e}");
+            self.console_output.push_str(&format!("Failed to send attach command: {e}\n"));
+        } else {
+            info!("attach_to_target: Attach command sent successfully");
+            // The result will come back via the event system
         }
-
-        // Start async attachment
-        tokio::spawn(async move {
-            // Start GDB session first if not already running
-            let start_result = {
-                let mut adapter = adapter.lock().await;
-                if !adapter.is_running() {
-                    adapter.start_session().await
-                } else {
-                    Ok(())
-                }
-            };
-            
-            if let Err(e) = start_result {
-                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to start GDB: {e}")));
-                return;
-            }
-
-            match attach_mode {
-                AttachMode::Process => {
-                    if let Ok(pid) = pid_input.parse::<u32>() {
-                        let result = {
-                            let mut adapter = adapter.lock().await;
-                            adapter.attach_to_process(pid).await
-                        };
-                        
-                        match result {
-                            Ok(_) => {
-                                let _ = event_sender.send(DebugEvent::AttachSuccess(Some(pid)));
-                            }
-                            Err(e) => {
-                                let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to attach to process: {e}")));
-                            }
-                        }
-                    }
-                }
-                AttachMode::GdbServer => {
-                    let result = {
-                        let mut adapter = adapter.lock().await;
-                        adapter.attach_to_gdbserver(&host_port).await
-                    };
-                    
-                    match result {
-                        Ok(_) => {
-                            let _ = event_sender.send(DebugEvent::AttachSuccess(None));
-                        }
-                        Err(e) => {
-                            let _ = event_sender.send(DebugEvent::AttachFailed(format!("Failed to connect to GDB server: {e}")));
-                        }
-                    }
-                }
-            }
-        });
     }
     
     fn detach_from_target(&mut self) {
+        info!("detach_from_target: Starting detach operation");
         self.console_output.push_str("Detaching from target...\n");
         
-        let adapter = self.gdb_adapter.clone();
-        let event_sender = self.event_sender.clone();
+        info!("detach_from_target: Sending Detach command via channel");
         
-        tokio::spawn(async move {
-            let result = {
-                let mut adapter = adapter.lock().await;
-                adapter.detach().await
-            };
-            
-            match result {
-                Ok(_) => {
-                    let _ = event_sender.send(DebugEvent::DetachSuccess);
-                }
-                Err(e) => {
-                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to detach: {e}\n")));
-                }
-            }
-        });
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::Detach) {
+            error!("detach_from_target: Failed to send Detach command: {e}");
+            self.console_output.push_str(&format!("Failed to send detach command: {e}\n"));
+        } else {
+            info!("detach_from_target: Detach command sent successfully");
+            // The result will come back via the event system
+        }
         
-        // Clear state immediately
+        // Clear state immediately for UI responsiveness
         self.is_attached = false;
         self.is_debugging = false;
         self.current_pid = None;
@@ -669,28 +620,25 @@ impl KatoriApp {
     
     fn set_breakpoint(&mut self) {
         if !self.breakpoint_input.is_empty() {
+            info!("set_breakpoint: Starting set breakpoint operation");
             self.console_output.push_str(&format!("Setting breakpoint at: {}\n", self.breakpoint_input));
             
             let location = self.breakpoint_input.clone();
-            let adapter = self.gdb_adapter.clone();
             
             // Add to breakpoints list immediately for UI feedback
             self.breakpoints.push(location.clone());
             self.breakpoint_input.clear();
             
-            tokio::spawn(async move {
-                match {
-                    let mut adapter = adapter.lock().await;
-                    adapter.set_breakpoint(&location).await
-                } {
-                    Ok(_) => {
-                        info!("Breakpoint set successfully at {location}");
-                    }
-                    Err(e) => {
-                        error!("Failed to set breakpoint: {e}");
-                    }
-                }
-            });
+            info!("set_breakpoint: Sending SetBreakpoint command via channel");
+            
+            // Send command via channel - non-blocking
+            if let Err(e) = self.command_sender.send(GdbCommand::SetBreakpoint(location)) {
+                error!("set_breakpoint: Failed to send SetBreakpoint command: {e}");
+                self.console_output.push_str(&format!("Failed to send set breakpoint command: {e}\n"));
+            } else {
+                info!("set_breakpoint: SetBreakpoint command sent successfully");
+                // The result will come back via the event system
+            }
         }
     }
     
@@ -835,25 +783,22 @@ impl KatoriApp {
     }
     
     fn read_memory(&mut self) {
+        info!("read_memory: Starting read memory operation");
         self.console_output.push_str(&format!("Reading {} bytes from {}\n", self.memory_size, self.memory_address));
         
         let address = self.memory_address.clone();
         let size = self.memory_size;
-        let adapter = self.gdb_adapter.clone();
         
-        tokio::spawn(async move {
-            match {
-                let mut adapter = adapter.lock().await;
-                adapter.read_memory(&address, size).await
-            } {
-                Ok(result) => {
-                    info!("Memory read successfully: {result:?}");
-                }
-                Err(e) => {
-                    error!("Failed to read memory: {e}");
-                }
-            }
-        });
+        info!("read_memory: Sending ReadMemory command via channel");
+        
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::ReadMemory(address, size)) {
+            error!("read_memory: Failed to send ReadMemory command: {e}");
+            self.console_output.push_str(&format!("Failed to send read memory command: {e}\n"));
+        } else {
+            info!("read_memory: ReadMemory command sent successfully");
+            // The result will come back via the event system
+        }
     }
     
     /// Automatically fetch debug information when GDB is stopped
@@ -865,104 +810,16 @@ impl KatoriApp {
         info!("auto_refresh_debug_info: Starting auto refresh");
         self.console_output.push_str("Refreshing debug information...\n");
         
-        let adapter = self.gdb_adapter.clone();
-        let event_sender = self.event_sender.clone();
+        info!("auto_refresh_debug_info: Sending RefreshDebugInfo command via channel");
         
-        // Start async refresh in background and send results via events
-        tokio::spawn(async move {
-            info!("auto_refresh_debug_info: Spawned task, acquiring adapter lock...");
-            
-            // Add timeout to the entire auto_refresh operation
-            let refresh_result = tokio::time::timeout(
-                std::time::Duration::from_secs(3), // 3 second timeout for the entire operation
-                async {
-                    let mut adapter = adapter.lock().await;
-                    info!("auto_refresh_debug_info: Adapter lock acquired");
-                    
-                    // Get register names first, then register values
-                    let mut register_names = Vec::new();
-                    debug!("auto_refresh_debug_info: Getting register names...");
-                    match adapter.get_register_names().await {
-                        Ok(names_result) => {
-                            // Extract names from the result
-                            if let Some(Value::List(names_list)) = names_result.results.get("register-names") {
-                                for (i, name_value) in names_list.iter().enumerate() {
-                                    if let Some(name) = name_value.as_string() {
-                                        register_names.push((i, name.to_string()));
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get register names: {e}");
-                        }
-                    }
-                    
-                    // Get registers
-                    debug!("auto_refresh_debug_info: Getting registers...");
-                    match adapter.get_registers().await {
-                        Ok(result) => {
-                            if let Some(registers) = Self::parse_registers(&result, &register_names) {
-                                let _ = event_sender.send(DebugEvent::RegistersUpdated(registers));
-                            }
-                        }
-                        Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get registers: {e}");
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get registers: {e}\n")));
-                        }
-                    }
-                    
-                    // Get stack frames
-                    debug!("auto_refresh_debug_info: Getting stack frames...");
-                    match adapter.get_stack_frames().await {
-                        Ok(result) => {
-                            match Self::parse_stack_frames(&result) {
-                                Ok(stack_frames) => {
-                                    let _ = event_sender.send(DebugEvent::StackFramesUpdated(stack_frames));
-                                }
-                                Err(e) => {
-                                    error!("auto_refresh_debug_info: Failed to parse stack frames: {e}");
-                                    let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to parse stack frames: {e}\n")));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get stack frames: {e}");
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get stack frames: {e}\n")));
-                        }
-                    }
-                    
-                    // Get assembly around current PC
-                    debug!("auto_refresh_debug_info: Getting assembly...");
-                    match adapter.disassemble_current(20).await {
-                        Ok(result) => {
-                            if let Some(assembly_lines) = Self::parse_assembly(&result) {
-                                let _ = event_sender.send(DebugEvent::AssemblyUpdated(assembly_lines));
-                            }
-                        }
-                        Err(e) => {
-                            error!("auto_refresh_debug_info: Failed to get assembly: {e}");
-                            let _ = event_sender.send(DebugEvent::ConsoleMessage(format!("Failed to get assembly: {e}\n")));
-                        }
-                    }
-                    
-                    info!("auto_refresh_debug_info: All operations completed, releasing lock");
-                    // Explicitly drop the adapter lock
-                    drop(adapter);
-                }
-            ).await;
-            
-            match refresh_result {
-                Ok(_) => {
-                    info!("auto_refresh_debug_info: Lock released, task ending successfully");
-                    let _ = event_sender.send(DebugEvent::ConsoleMessage("Debug info refresh completed\n".to_string()));
-                }
-                Err(_) => {
-                    error!("auto_refresh_debug_info: Timeout after 3 seconds, forcibly ending task");
-                    let _ = event_sender.send(DebugEvent::ConsoleMessage("Debug info refresh timed out\n".to_string()));
-                }
-            }
-        });
+        // Send command via channel - non-blocking
+        if let Err(e) = self.command_sender.send(GdbCommand::RefreshDebugInfo) {
+            error!("auto_refresh_debug_info: Failed to send RefreshDebugInfo command: {e}");
+            self.console_output.push_str(&format!("Failed to send refresh command: {e}\n"));
+        } else {
+            info!("auto_refresh_debug_info: RefreshDebugInfo command sent successfully");
+            // The result will come back via the event system
+        }
     }
     
     /// Parse register values from GDB/MI result
@@ -1128,6 +985,16 @@ impl eframe::App for KatoriApp {
                 DebugEvent::DetachSuccess => {
                     self.console_output.push_str("Successfully detached\n");
                 }
+                DebugEvent::MemoryRead(data) => {
+                    self.memory_data = data.clone();
+                    self.console_output.push_str(&format!("Memory read successfully: {} bytes\n", data.len()));
+                    info!("Event: Memory read completed: {} bytes", data.len());
+                }
+                DebugEvent::MemoryReadFailed(error) => {
+                    self.console_output.push_str(&format!("Memory read failed: {error}\n"));
+                    self.error_message = format!("Memory read failed: {error}");
+                    info!("Event: Memory read failed: {error}");
+                }
                 DebugEvent::CommandCompleted(command) => {
                     info!("Event: Command completed: {command:?}");
                     // Update target state if needed
@@ -1139,10 +1006,12 @@ impl eframe::App for KatoriApp {
                         GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut => {
                             self.target_state = TargetState::Stopped;
                             self.console_output.push_str("Step completed\n");
+                            self.auto_refresh_debug_info();
                         }
                         GdbCommand::Interrupt => {
                             self.target_state = TargetState::Stopped;
                             self.console_output.push_str("Target interrupted\n");
+                            self.auto_refresh_debug_info();
                         }
                         _ => {}
                     }

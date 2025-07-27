@@ -15,17 +15,6 @@ mod gui_tests {
         assert!(app.get_console_output().contains("Welcome to Katori"));
     }
 
-    #[tokio::test]
-    async fn test_gdb_session_lifecycle() {
-        let mut app = KatoriApp::new();
-        
-        // Test starting session (async version for testing)
-        let result = app.start_gdb_session_async().await;
-        // We expect this to fail since we don't have GDB installed in test environment
-        // But that's OK - it means the async call worked and tried to connect
-        assert!(result.is_err() || result.is_ok(), "GDB session start attempt completed");
-    }
-
     #[test]
     fn test_console_output_updates() {
         let mut app = KatoriApp::new();
