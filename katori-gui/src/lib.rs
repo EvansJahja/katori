@@ -407,111 +407,11 @@ impl KatoriApp {
         Ok(())
     }
 
-    // Public methods for testing
-    pub fn is_debugging(&self) -> bool {
-        self.is_debugging
-    }
-
-    pub fn is_attached(&self) -> bool {
-        self.is_attached
-    }
-
-    pub fn get_host_port(&self) -> &str {
-        &self.current_host_port
-    }
-
-    pub fn get_console_output(&self) -> &str {
-        &self.console_output
-    }
-
-    pub fn add_console_message(&mut self, message: &str) {
-        self.console_output.push_str(message);
-        self.console_output.push('\n');
-    }
-
-    pub fn get_attach_mode(&self) -> &AttachMode {
-        &self.attach_mode
-    }
-
-    pub fn set_attach_mode(&mut self, mode: AttachMode) {
-        self.attach_mode = mode;
-    }
-
-    pub fn get_breakpoints(&self) -> &Vec<String> {
-        &self.breakpoints
-    }
-
-    pub fn get_breakpoint_input(&self) -> &str {
-        &self.breakpoint_input
-    }
-
-    pub fn set_breakpoint_input(&mut self, input: String) {
-        self.breakpoint_input = input;
-    }
-
-    pub fn add_breakpoint_from_input(&mut self) {
-        if !self.breakpoint_input.is_empty() {
-            self.breakpoints.push(self.breakpoint_input.clone());
-            self.breakpoint_input.clear();
-        }
-    }
-
-    pub fn get_error_message(&self) -> &str {
-        &self.error_message
-    }
-
-    pub fn set_error_message(&mut self, message: String) {
-        self.error_message = message;
-    }
-
-    pub fn clear_error_message(&mut self) {
-        self.error_message.clear();
-    }
-
-    pub fn get_registers(&self) -> &Vec<Register> {
-        &self.registers
-    }
-
-    pub fn get_assembly_lines(&self) -> &Vec<AssemblyLine> {
-        &self.assembly_lines
-    }
-
-    pub fn get_stack_frames(&self) -> &Vec<StackFrame> {
-        &self.stack_frames
-    }
 
     pub fn clear_debug_info(&mut self) {
         self.registers.clear();
         self.assembly_lines.clear();
         self.stack_frames.clear();
-    }
-
-    pub fn is_registers_visible(&self) -> bool {
-        self.show_registers
-    }
-
-    pub fn set_registers_visible(&mut self, visible: bool) {
-        self.show_registers = visible;
-    }
-
-    pub fn is_assembly_visible(&self) -> bool {
-        self.show_assembly
-    }
-
-    pub fn is_stack_visible(&self) -> bool {
-        self.show_stack
-    }
-
-    pub fn is_memory_visible(&self) -> bool {
-        self.show_memory
-    }
-
-    pub fn set_memory_visible(&mut self, visible: bool) {
-        self.show_memory = visible;
-    }
-
-    pub fn is_console_visible(&self) -> bool {
-        self.show_console
     }
     
     pub fn start_gdb_session(&mut self) {
@@ -552,13 +452,6 @@ impl KatoriApp {
         self.clear_debug_info();
         self.breakpoints.clear();
     }
-
-    // Helper method to create a channel for console updates (simplified for now)
-    fn create_console_sender(&self) -> std::sync::mpsc::Sender<String> {
-        let (sender, _receiver) = std::sync::mpsc::channel();
-        // In a real implementation, you'd store the receiver and process messages in update()
-        sender
-    }  
 
     fn attach_to_target(&mut self) {
         info!("attach_to_target: Starting attachment process");
