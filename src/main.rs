@@ -1,12 +1,13 @@
 use gdbadapter::GdbAdapter;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Initialize the logger first
     simple_logger::SimpleLogger::new()
         .with_level(log::LevelFilter::Debug)
         .with_module_level("eframe", log::LevelFilter::Warn)
         .with_module_level("egui_glow", log::LevelFilter::Warn)
-        .with_module_level("gdbadapter", log::LevelFilter::Trace)
+        .with_module_level("gdbadapter", log::LevelFilter::Debug)
         .init()
         .unwrap();
     

@@ -5,10 +5,6 @@ use tokio::sync::Mutex;
 use log::{info, warn, error, debug};
 
 pub fn run_gui() -> i32 {
-    // Create a tokio runtime for async operations
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-    let _guard = rt.enter();
-    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
@@ -322,16 +318,6 @@ impl KatoriApp {
                 Ok(())
             }
         }
-    }
-    
-    /// Process debug info refresh and send individual events
-    async fn process_refresh_debug_info(
-        gdb_adapter: Arc<Mutex<GdbAdapter>>,
-    ) -> Result<(), String> {
-        // This method will be implemented in Phase 2.3
-        // For now, just return Ok
-        info!("RefreshDebugInfo command processed (placeholder)");
-        Ok(())
     }
     
     /// Internal helper to send debug info refresh events
@@ -802,169 +788,6 @@ impl KatoriApp {
         }
     }
     
-    // Blocking version of debug info refresh
-    fn refresh_debug_info_blocking(&mut self) {
-        info!("refresh_debug_info_blocking: Starting debug info refresh");
-        
-        if !self.is_debugging || !self.is_attached {
-            warn!("refresh_debug_info_blocking: Not debugging or attached (debugging: {}, attached: {})", 
-                  self.is_debugging, self.is_attached);
-            return;
-        }
-        
-        debug!("refresh_debug_info_blocking: Getting tokio runtime handle");
-        let rt = tokio::runtime::Handle::current();
-        
-        let result = rt.block_on(async {
-            debug!("refresh_debug_info_blocking: Acquiring adapter lock...");
-            
-            // Add timeout to prevent hanging
-            let refresh_result = tokio::time::timeout(
-                std::time::Duration::from_secs(3), // 3 second timeout for the entire operation
-                async {
-                    let mut adapter = self.gdb_adapter.lock().await;
-                    debug!("refresh_debug_info_blocking: Adapter lock acquired");
-                    
-                    // Get register names first, then register values
-                    let mut register_names = Vec::new();
-                    debug!("refresh_debug_info_blocking: Getting register names...");
-                    match adapter.get_register_names().await {
-                        Ok(names_result) => {
-                            debug!("refresh_debug_info_blocking: Got register names result");
-                            // Extract names from the result
-                            if let Some(Value::List(names_list)) = names_result.results.get("register-names") {
-                                for (i, name_value) in names_list.iter().enumerate() {
-                                    if let Some(name) = name_value.as_string() {
-                                        register_names.push((i, name.to_string()));
-                                    }
-                                }
-                            }
-                            debug!("refresh_debug_info_blocking: Parsed {} register names", register_names.len());
-                        }
-                        Err(e) => {
-                            error!("refresh_debug_info_blocking: Failed to get register names: {}", e);
-                        }
-                    }
-                    
-                    let mut registers = None;
-                    let mut stack_frames: Option<Vec<StackFrame>> = None;
-                    let mut assembly_lines = None;
-                    
-                    // Get registers
-                    debug!("refresh_debug_info_blocking: Getting registers...");
-                    match adapter.get_registers().await {
-                        Ok(result) => {
-                            // Check if GDB returned an error result
-                            if result.class == gdbadapter::ResultClass::Error {
-                                let error_msg = result.results.get("msg")
-                                    .and_then(|v| v.as_string())
-                                    .unwrap_or("Unknown GDB error");
-                                error!("refresh_debug_info_blocking: GDB returned error for get_registers: {}", error_msg);
-                            } else {
-                                debug!("refresh_debug_info_blocking: Got registers result");
-                                registers = Self::parse_registers(&result, &register_names);
-                                if let Some(ref regs) = registers {
-                                    debug!("refresh_debug_info_blocking: Parsed {} registers", regs.len());
-                                } else {
-                                    warn!("refresh_debug_info_blocking: Failed to parse registers");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("refresh_debug_info_blocking: Failed to get registers: {}", e);
-                        }
-                    }
-                    
-                    // Get stack frames (this is where it hangs)
-                    debug!("refresh_debug_info_blocking: Getting stack frames...");
-                    match adapter.get_stack_frames().await {
-                        Ok(result) => {
-                            // Check if GDB returned an error result
-                            if result.class == gdbadapter::ResultClass::Error {
-                                let error_msg = result.results.get("msg")
-                                    .and_then(|v| v.as_string())
-                                    .unwrap_or("Unknown GDB error");
-                                error!("refresh_debug_info_blocking: GDB returned error for get_stack_frames: {}", error_msg);
-                            } else {
-                                debug!("refresh_debug_info_blocking: Got stack frames result");
-                                match Self::parse_stack_frames(&result) {
-                                    Ok(frames) => {
-                                        debug!("refresh_debug_info_blocking: Parsed {} stack frames", frames.len());
-                                        stack_frames = Some(frames);
-                                    }
-                                    Err(e) => {
-                                        error!("refresh_debug_info_blocking: Failed to parse stack frames: {}", e);
-                                        stack_frames = None;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("refresh_debug_info_blocking: Failed to get stack frames: {}", e);
-                        }
-                    }
-                    
-                    // Get assembly around current PC
-                    debug!("refresh_debug_info_blocking: Getting assembly...");
-                    match adapter.disassemble_current(20).await {
-                        Ok(result) => {
-                            // Check if GDB returned an error result
-                            if result.class == gdbadapter::ResultClass::Error {
-                                let error_msg = result.results.get("msg")
-                                    .and_then(|v| v.as_string())
-                                    .unwrap_or("Unknown GDB error");
-                                error!("refresh_debug_info_blocking: GDB returned error for disassemble_current: {}", error_msg);
-                            } else {
-                                debug!("refresh_debug_info_blocking: Got assembly result");
-                                assembly_lines = Self::parse_assembly(&result);
-                                if let Some(ref asm) = assembly_lines {
-                                    debug!("refresh_debug_info_blocking: Parsed {} assembly lines", asm.len());
-                                } else {
-                                    warn!("refresh_debug_info_blocking: Failed to parse assembly");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("refresh_debug_info_blocking: Failed to get assembly: {}", e);
-                        }
-                    }
-                    
-                    (registers, stack_frames, assembly_lines)
-                }
-            ).await;
-            
-            match refresh_result {
-                Ok(result) => {
-                    debug!("refresh_debug_info_blocking: All operations completed successfully");
-                    result
-                }
-                Err(_) => {
-                    error!("refresh_debug_info_blocking: Timeout after 3 seconds");
-                    (None, None, None) // Return empty results on timeout
-                }
-            }
-        });
-        
-        debug!("refresh_debug_info_blocking: Updating GUI state with results");
-        // Update the GUI state immediately
-        if let Some(registers) = result.0 {
-            self.registers = registers;
-            info!("refresh_debug_info_blocking: Updated registers: {} items", self.registers.len());
-        }
-        
-        if let Some(frames) = result.1 {
-            self.stack_frames = frames;
-            info!("refresh_debug_info_blocking: Updated stack frames: {} items", self.stack_frames.len());
-        }
-        
-        if let Some(assembly) = result.2 {
-            self.assembly_lines = assembly;
-            info!("refresh_debug_info_blocking: Updated assembly: {} items", self.assembly_lines.len());
-        }
-        
-        info!("refresh_debug_info_blocking: Debug info refresh completed");
-    }
-    
     fn interrupt_execution(&mut self) {
         info!("interrupt_execution: Starting interrupt operation (async)");
         self.console_output.push_str("Interrupting execution...\n");
@@ -1373,16 +1196,20 @@ impl eframe::App for KatoriApp {
                 ui.menu_button("Debug", |ui| {
                     if ui.button("Start Session").clicked() {
                         self.start_gdb_session();
+                        ui.close_menu();
                     }
                     if ui.button("Stop Session").clicked() {
                         self.stop_gdb_session();
+                        ui.close_menu();
                     }
                     ui.separator();
                     if ui.button("Attach").clicked() {
                         self.attach_to_target();
+                        ui.close_menu();
                     }
                     if ui.button("Detach").clicked() {
                         self.detach_from_target();
+                        ui.close_menu();
                     }
                 });
                 
@@ -1505,143 +1332,144 @@ impl eframe::App for KatoriApp {
                     });
             });
         }
-        
-        // Main content area - Assembly in center with right sidebar
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Main assembly panel (takes most of the space)
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(ui.available_width() * 0.7, ui.available_height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        if self.show_assembly {
-                            ui.heading("Assembly");
-                            egui::ScrollArea::vertical()
-                                .id_source("assembly_scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| {
-                                    if self.assembly_lines.is_empty() {
-                                        ui.centered_and_justified(|ui| {
-                                            ui.label("No assembly data available");
-                                        });
-                                    } else {
-                                        for line in &self.assembly_lines {
-                                            ui.monospace(format!("{}: {}", line.address, line.instruction));
-                                        }
-                                    }
-                                });
+
+        // Right sidebar for registers and stack
+        if self.show_registers || self.show_stack {
+            egui::SidePanel::right("debug_sidebar")
+                .min_width(250.0)
+                .default_width(300.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    // Registers panel (top half of sidebar)
+                    if self.show_registers {
+                        ui.heading("Registers");
+                        
+                        let available_height = if self.show_stack {
+                            ui.available_height() * 0.5
                         } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("Assembly view disabled");
-                            });
-                        }
-                    }
-                );
-                
-                ui.separator();
-                
-                // Right sidebar for registers and stack (takes remaining space)
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(ui.available_width(), ui.available_height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        // Registers panel (top half of sidebar)
-                        if self.show_registers {
-                            ui.allocate_ui_with_layout(
-                                egui::Vec2::new(ui.available_width(), ui.available_height() * 0.5),
-                                egui::Layout::top_down(egui::Align::LEFT),
-                                |ui| {
-                                    ui.heading("Registers");
-                                    egui::ScrollArea::vertical()
-                                        .id_source("registers_scroll")
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            if self.registers.is_empty() {
-                                                ui.label("No register data");
-                                            } else {
-                                                for reg in &self.registers {
-                                                    ui.horizontal(|ui| {
-                                                        ui.monospace(format!("{:8}", reg.name));
-                                                        ui.monospace(&reg.value);
-                                                    });
-                                                }
+                            ui.available_height()
+                        };
+                        
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(ui.available_width(), available_height),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_source("registers_scroll")
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        if self.registers.is_empty() {
+                                            ui.label("No register data");
+                                        } else {
+                                            for reg in &self.registers {
+                                                ui.horizontal(|ui| {
+                                                    ui.monospace(format!("{:8}", reg.name));
+                                                    ui.monospace(&reg.value);
+                                                });
                                             }
-                                        });
-                                }
-                            );
-                        }
+                                        }
+                                    });
+                            }
+                        );
                         
-                        ui.separator();
-                        
-                        // Stack frames panel (bottom half of sidebar)
                         if self.show_stack {
-                            ui.allocate_ui_with_layout(
-                                egui::Vec2::new(ui.available_width(), ui.available_height()),
-                                egui::Layout::top_down(egui::Align::LEFT),
-                                |ui| {
-                                    ui.heading("Stack Frames");
-                                    egui::ScrollArea::vertical()
-                                        .id_source("stack_scroll")
-                                        .auto_shrink([false, false])
-                                        .show(ui, |ui| {
-                                            if self.stack_frames.is_empty() {
-                                                ui.label("No stack data");
-                                            } else {
-                                                for frame in &self.stack_frames {
-                                                    let display = if let Some(func) = &frame.function {
-                                                        format!("#{} {} @ 0x{}", frame.level, func, frame.address)
-                                                    } else {
-                                                        format!("#{} @ 0x{}", frame.level, frame.address)
-                                                    };
-                                                    ui.monospace(display);
-                                                }
-                                            }
-                                        });
-                                }
-                            );
+                            ui.separator();
                         }
                     }
-                );
-            });
-            
-            // Memory viewer (if enabled) - separate section at the bottom
-            if self.show_memory {
-                ui.separator();
-                ui.heading("Memory Viewer");
-                ui.horizontal(|ui| {
-                    ui.label("Address:");
-                    ui.text_edit_singleline(&mut self.memory_address);
-                    ui.label("Size:");
-                    ui.add(egui::DragValue::new(&mut self.memory_size).speed(1.0));
-                    if ui.button("Read").clicked() {
-                        self.read_memory();
+                    
+                    // Stack frames panel (bottom half of sidebar)
+                    if self.show_stack {
+                        ui.heading("Stack Frames");
+                        egui::ScrollArea::vertical()
+                            .id_source("stack_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if self.stack_frames.is_empty() {
+                                    ui.label("No stack data");
+                                } else {
+                                    for frame in &self.stack_frames {
+                                        let display = if let Some(func) = &frame.function {
+                                            format!("#{} {} @ 0x{}", frame.level, func, frame.address)
+                                        } else {
+                                            format!("#{} @ 0x{}", frame.level, frame.address)
+                                        };
+                                        ui.monospace(display);
+                                    }
+                                }
+                            });
                     }
                 });
-                
-                // Memory display
-                egui::ScrollArea::vertical()
-                    .id_source("memory_scroll")
-                    .show(ui, |ui| {
-                        if self.memory_data.is_empty() {
-                            ui.label("No memory data");
-                        } else {
-                            for (i, chunk) in self.memory_data.chunks(16).enumerate() {
-                                let mut hex_str = String::new();
-                                let mut ascii_str = String::new();
-                                
-                                for byte in chunk {
-                                    hex_str.push_str(&format!("{:02x} ", byte));
-                                    if byte.is_ascii_graphic() {
-                                        ascii_str.push(*byte as char);
-                                    } else {
-                                        ascii_str.push('.');
+        }
+
+        // Memory viewer at bottom (if enabled)
+        if self.show_memory {
+            egui::TopBottomPanel::bottom("memory_panel")
+                .min_height(200.0)
+                .default_height(250.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("Memory Viewer");
+                    ui.horizontal(|ui| {
+                        ui.label("Address:");
+                        ui.text_edit_singleline(&mut self.memory_address);
+                        ui.label("Size:");
+                        ui.add(egui::DragValue::new(&mut self.memory_size).speed(1.0));
+                        if ui.button("Read").clicked() {
+                            self.read_memory();
+                        }
+                    });
+                    
+                    ui.separator();
+                    
+                    // Memory display
+                    egui::ScrollArea::vertical()
+                        .id_source("memory_scroll")
+                        .show(ui, |ui| {
+                            if self.memory_data.is_empty() {
+                                ui.label("No memory data");
+                            } else {
+                                for (i, chunk) in self.memory_data.chunks(16).enumerate() {
+                                    let mut hex_str = String::new();
+                                    let mut ascii_str = String::new();
+                                    
+                                    for byte in chunk {
+                                        hex_str.push_str(&format!("{:02x} ", byte));
+                                        if byte.is_ascii_graphic() {
+                                            ascii_str.push(*byte as char);
+                                        } else {
+                                            ascii_str.push('.');
+                                        }
                                     }
+                                    
+                                    ui.monospace(format!("{:08x}: {:<48} {}", i * 16, hex_str, ascii_str));
                                 }
-                                
-                                ui.monospace(format!("{:08x}: {:<48} {}", i * 16, hex_str, ascii_str));
+                            }
+                        });
+                });
+        }
+        
+        // Main content area - Assembly takes the remaining space
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.show_assembly {
+                ui.heading("Assembly");
+                egui::ScrollArea::vertical()
+                    .id_source("assembly_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.assembly_lines.is_empty() {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("No assembly data available");
+                            });
+                        } else {
+                            for line in &self.assembly_lines {
+                                ui.monospace(format!("{}: {}", line.address, line.instruction));
                             }
                         }
                     });
+            } else {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Assembly view disabled");
+                });
             }
         });
     }

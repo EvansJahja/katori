@@ -1826,6 +1826,7 @@ dependencies = [
  "katori-gui",
  "log",
  "simple_logger",
+ "tokio",
 ]
 
 [[package]]
