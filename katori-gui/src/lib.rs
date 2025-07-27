@@ -74,9 +74,8 @@ pub struct KatoriApp {
     event_receiver: std::sync::mpsc::Receiver<DebugEvent>,
     event_sender: std::sync::mpsc::Sender<DebugEvent>,
     
-    /// Command channel for async GDB operations
+    /// Command channel for async GDB operations from GUI
     command_sender: std::sync::mpsc::Sender<GdbCommand>,
-    command_receiver: std::sync::mpsc::Receiver<GdbCommand>,
     
     /// Debug session state
     is_debugging: bool,
@@ -135,7 +134,6 @@ impl KatoriApp {
             event_receiver,
             event_sender,
             command_sender,
-            command_receiver: std::sync::mpsc::channel().1, // Dummy receiver since the real one is moved to the task
             is_debugging: false,
             is_attached: false,
             current_pid: None,
