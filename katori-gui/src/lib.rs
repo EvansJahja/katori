@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::{egui, CreationContext};
 use gdbadapter::{AssemblyLine, GdbAdapter, GdbEvent, Register, StackFrame, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -15,7 +15,7 @@ pub fn run_gui() -> i32 {
     match eframe::run_native(
         "Katori",
         options,
-        Box::new(|_cc| Box::new(KatoriApp::new())),
+        Box::new(|cc| Box::new(KatoriApp::new(cc))),
     ) {
         Ok(_) => 0,
         Err(e) => {
@@ -121,7 +121,7 @@ pub enum AttachMode {
 }
 
 impl KatoriApp {
-    pub fn new() -> Self {
+    pub fn new(cc: &CreationContext) -> Self {
         let gdb_adapter = Arc::new(Mutex::new(GdbAdapter::new()));
         let (event_sender, event_receiver) = std::sync::mpsc::channel();
         let (command_sender, command_receiver) = std::sync::mpsc::channel();
@@ -129,7 +129,8 @@ impl KatoriApp {
         // Start the background command processor
         let adapter_clone = gdb_adapter.clone();
         let event_sender_clone = event_sender.clone();
-        tokio::spawn(Self::command_processor_task(adapter_clone, command_receiver, event_sender_clone));
+        let ctx = cc.egui_ctx.clone();
+        tokio::spawn(Self::command_processor_task(ctx, adapter_clone, command_receiver, event_sender_clone));
         
         Self {
             gdb_adapter,
@@ -163,6 +164,7 @@ impl KatoriApp {
 
     /// Background task that processes GDB commands asynchronously
     async fn command_processor_task(
+        ctx: egui::Context,
         gdb_adapter: Arc<Mutex<GdbAdapter>>,
         command_receiver: std::sync::mpsc::Receiver<GdbCommand>,
         event_sender: std::sync::mpsc::Sender<DebugEvent>,
@@ -213,6 +215,7 @@ impl KatoriApp {
                     log::debug!("Processing async record: {:?}", record);
                 }
             }
+            ctx.request_repaint(); // Request repaint to update UI with new events
         }
     }
     
@@ -950,9 +953,6 @@ impl eframe::App for KatoriApp {
                 }
             }
         }
-        
-        // Request repaint to keep GUI responsive
-        ctx.request_repaint();
         
         // Menu bar
         egui::TopBottomPanel::top("menubar").show(ctx, |ui| {
