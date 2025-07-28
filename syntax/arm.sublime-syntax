@@ -1,0 +1,92 @@
+%YAML 1.2
+---
+# [PackageDev] target_format: plist, ext: tmLanguage
+name: ARM
+file_extensions:
+  - s
+  - S
+  - asm
+scope: source.asm.arm
+
+contexts:
+  main:
+    # Memory Addresses at the beginning of the line (e.g., 0x00000000:)
+    - match: "^(0x[0-9a-fA-F]+):"
+      scope: comment.line.hex.arm.address
+
+    # Comments: starts with ;, //, or @
+    - match: "(?i)(;.*|//.*|@.*)$"
+      scope: comment.line.asm.arm
+
+    # Registers: General purpose registers and CPSR
+    - match: "(?i)\\b(r[0-9]|r1[0-5]|sp|lr|pc)\\b"
+      scope: variable.other.register.arm
+    - match: "(?i)\\bCPSR(_[cfsx]+)?\\b"
+      scope: storage.type.source.s
+
+    # Data Processing Instructions: Add, Subtract, Multiply, Divide, Move, Logical, Compare
+    - match: "(?i)\\b(AD(D|C)S?|(QD?)ADD|RS(B|C)S?|(QD?)?SUBS?|SBCS?|(M((UL)|(LA))S?)|(MLS)|(UM((UL)|(LA)|(AA))L)|(S|U)DIV|MOV(S|T)?|MVNS?|MRA|MAR|TST|TEQ|ANDS?|EORS?|OR(R|N)S?|BICS?|CMP|CMN)\\b"
+      scope: support.function.mnemonic.arm.data-processing
+
+    # Shift and Bit Field Instructions
+    - match: "(?i)\\b(ASRS?|LSLS?|LSRS?|RORS?|RRXS?|CLZ|BF(C|I)|(S|U)BFX|PKH(BT|TB)|SXT(H|B(16)?)|UXT(H|B(16)?)|SXTA(H|B(16)?)|UXTA(H|B(16)?)|R(BIT|EV(16|SH)?)|SEL)\\b"
+      scope: support.function.mnemonic.arm.shift-bitfield
+
+    # Parallel Arithmetic and Saturate Instructions
+    - match: "(?i)\\b(((SH?|Q|U(Q|H))?(ADD(16|8)|SUB(16|8)|ASX|SAX))|USADA?8|(S|U)SAT(16)?)\\b"
+      scope: support.function.mnemonic.arm.parallel-saturate
+
+    # Load/Store Instructions: Single, Double, Multiple, Exclusive, Preload, Pop/Push
+    - match: "(?i)\\b((LDR|STR)(S?(B|H))?T?|(LDR|STR)D|PL(DW?|I)|(LDM|STM)(IA|IB|DA|DB)?(EQ|NE|CS|HS|CC|LO|MI|PL|VS|VC|HI|LS|GE|LT|GT|LE|AL)?!?|(POP|PUSH)|(LDR|STR)EX(H|B|D)?|CLREX)\\b"
+      scope: support.function.mnemonic.arm.load-store
+
+    # Branch and Control Flow Instructions: Branch, Call, Conditional, System Calls, NOP
+    - match: "(?i)\\b(b|bl|beq|bne|BL?X?|BXJ|CBN?Z|TB(B|H)|SVC|S(M|V)C|NOP|BKPT|IT{(T|E)?(T|E)?(T|E)?})\\b"
+      scope: support.function.mnemonic.arm.branch-control
+
+    # System and Coprocessor Instructions
+    - match: "(?i)\\b((MRS|MSR)|(CPS(I[DE])?|SETEND)|(CDP2?|MRR?C2?|MCRR?2?|(LD|ST)C2?)|SWPB?|(SRS|RFE)((I|D)(A|B))?)\\b"
+      scope: support.function.mnemonic.arm.system-coprocessor
+
+    # Additional Common Opcodes (that might not fit above perfectly or were missed)
+    - match: "(?i)\\b(SWI|BKPT|DBG|DMB|DSB|ISB|MRS|MSR|CLREX|SEV|WFE|WFI|YIELD)\\b"
+      scope: support.function.mnemonic.arm.general
+
+    # Conditional codes (e.g., EQ, NE)
+    - match: "(?i)\\b(EQ|NE|CS|HS|CC|LO|MI|PL|VS|VC|HI|LS|GE|LT|GT|LE|AL)\\b"
+      scope: keyword.control.statement.source.s
+
+    # Directives (expanded)
+    - match: "\\.(?i)(global|extern|section|text|data|word|byte|asciz|EQU|DEF(W|S|B)|ALIGN|END|ENTRY|EXPORT|IMPORT|MACRO|MEND|AREA)\\b"
+      scope: keyword.control.directive.asm.arm
+
+    # Shift operators (e.g., LSL, LSR)
+    - match: "(?i)[ \\t]((LSL|LSR|ASR|ROR[ \\t])|RRX)\\b"
+      scope: keyword.operator.source.s
+
+    # Numbers
+    # Immediate Hex numbers (e.g., #0xAF)
+    - match: "#(0x[0-9a-fA-F]+)\\b"
+      scope: constant.numeric.hex.arm.immediate
+    # Direct Hex numbers (e.g., 0xAF)
+    - match: "\\b(0x[0-9a-fA-F]+)\\b"
+      scope: constant.numeric.hex.arm
+    # Immediate Decimal numbers (e.g., #123)
+    - match: "#([0-9]+)\\b"
+      scope: constant.numeric.decimal.arm.immediate
+    # Direct Decimal numbers (e.g., 123)
+    - match: "\\b([0-9]+)\\b"
+      scope: constant.numeric.decimal.arm
+    # Immediate values with # or & (from plist, less specific than above hex/decimal immediate)
+    - match: "[#&][^];]+"
+      scope: constant.language.source.s
+
+    # Labels (e.g., my_label:)
+    - match: "([a-zA-Z_][a-zA-Z0-9_]*):"
+      scope: entity.name.function.label.arm
+
+    # Strings
+    - match: "\\b'[^']+'" # Single-quoted strings
+      scope: string.quoted.single.arm
+    - match: '\\b"[^"]+"' # Double-quoted strings
+      scope: string.quoted.double.arm

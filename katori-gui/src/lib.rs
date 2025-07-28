@@ -15,7 +15,7 @@ pub fn run_gui() -> i32 {
     match eframe::run_native(
         "Katori",
         options,
-        Box::new(|cc| Box::new(KatoriApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(KatoriApp::new(cc)))),
     ) {
         Ok(_) => 0,
         Err(e) => {
@@ -71,6 +71,8 @@ enum TargetState {
 pub struct KatoriApp {
     /// GDB adapter instance
     gdb_adapter: Arc<Mutex<GdbAdapter>>,
+
+    syntax_set: syntect::parsing::SyntaxSet,
     
     /// Event communication
     event_receiver: std::sync::mpsc::Receiver<DebugEvent>,
@@ -131,9 +133,22 @@ impl KatoriApp {
         let event_sender_clone = event_sender.clone();
         let ctx = cc.egui_ctx.clone();
         tokio::spawn(Self::command_processor_task(ctx, adapter_clone, command_receiver, event_sender_clone));
+
+        // Create syntax set
+
+        let mut builder = syntect::parsing::SyntaxSetBuilder::new();
+
+        builder.add_from_folder("syntax", true).unwrap();
+        let ps = builder.build();
+
+        for syntax in ps.syntaxes() {
+            debug!("Loaded syntax: {}", syntax.name);
+        }
+
         
         Self {
             gdb_adapter,
+            syntax_set: ps,
             event_receiver,
             event_sender,
             command_sender,
@@ -1231,9 +1246,12 @@ impl eframe::App for KatoriApp {
                                 ui.label("No assembly data available");
                             });
                         } else {
-                            for line in &self.assembly_lines {
-                                ui.monospace(format!("{}: {}", line.address, line.instruction));
-                            }
+                            let text = self.assembly_lines.iter()
+                                .map(|line| format!("{}: {}",line.address, line.instruction))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            self.show_code(ui, text);
                         }
                     });
             } else {
@@ -1243,4 +1261,34 @@ impl eframe::App for KatoriApp {
             }
         });
     }
+}
+
+impl KatoriApp {
+    fn show_code(&mut self, ui: &mut egui::Ui, text: String) {
+        let ps = self.syntax_set.clone();
+        let ts = syntect::highlighting::ThemeSet::load_defaults();
+        let syntax =
+            egui_extras::syntax_highlighting::SyntectSettings { ps, ts };
+
+        // ...elsewhere
+        let theme =egui_extras::syntax_highlighting::CodeTheme::default();
+        let layout = egui_extras::syntax_highlighting::highlight_with(
+            ui.ctx(),
+            ui.style(),
+            &theme,
+            &text,
+            "ARM",
+            &syntax,
+        );
+
+        // let layout = egui_extras::syntax_highlighting::highlight(ui.ctx(), ui.style(), &egui_extras::syntax_highlighting::CodeTheme::default(), &text, "arm");
+        ui.add(egui::Label::new(layout));
+        // egui_extras::syntax_highlighting::code_view_ui(ui, &egui_extras::syntax_highlighting::CodeTheme::default(), &text, "arm");
+
+        // let language = "C"; 
+        // let theme =egui_extras::syntax_highlighting::CodeTheme::default();
+        // egui_extras::syntax_highlighting::code_view_ui(ui, &theme, &text, language);
+
+    }
+
 }
