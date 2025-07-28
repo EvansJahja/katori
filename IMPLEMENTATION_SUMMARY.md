@@ -75,7 +75,7 @@
 - **Result**: Reliable interrupt functionality that stops GDB execution without killing the frontend
 
 #### **ScrollArea ID Conflicts**
-- Added unique `id_source` to each ScrollArea widget:
+- Added unique `id_salt` to each ScrollArea widget:
   - `console_scroll` - Console output panel
   - `assembly_scroll` - Assembly view panel
   - `registers_scroll` - Register view panel

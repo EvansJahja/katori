@@ -1110,7 +1110,7 @@ impl eframe::App for KatoriApp {
             egui::TopBottomPanel::bottom("console").min_height(150.0).show(ctx, |ui| {
                 ui.label("Console Output:");
                 egui::ScrollArea::vertical()
-                    .id_source("console_scroll")
+                    .id_salt("console_scroll")
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         ui.monospace(&self.console_output);
@@ -1140,7 +1140,7 @@ impl eframe::App for KatoriApp {
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
                                 egui::ScrollArea::vertical()
-                                    .id_source("registers_scroll")
+                                    .id_salt("registers_scroll")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         if self.registers.is_empty() {
@@ -1166,7 +1166,7 @@ impl eframe::App for KatoriApp {
                     if self.show_stack {
                         ui.heading("Stack Frames");
                         egui::ScrollArea::vertical()
-                            .id_source("stack_scroll")
+                            .id_salt("stack_scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 if self.stack_frames.is_empty() {
@@ -1208,7 +1208,7 @@ impl eframe::App for KatoriApp {
                     
                     // Memory display
                     egui::ScrollArea::vertical()
-                        .id_source("memory_scroll")
+                        .id_salt("memory_scroll")
                         .show(ui, |ui| {
                             if self.memory_data.is_empty() {
                                 ui.label("No memory data");
@@ -1238,7 +1238,7 @@ impl eframe::App for KatoriApp {
             if self.show_assembly {
                 ui.heading("Assembly");
                 egui::ScrollArea::vertical()
-                    .id_source("assembly_scroll")
+                    .id_salt("assembly_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if self.assembly_lines.is_empty() {
