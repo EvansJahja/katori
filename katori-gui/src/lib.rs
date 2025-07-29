@@ -1,5 +1,5 @@
 use eframe::{egui, CreationContext};
-use gdbadapter::{AssemblyLine, GdbAdapter, GdbEvent, Register, StackFrame, Value};
+use gdbadapter::{AssemblyLine, AsyncClass, GdbAdapter, GdbEvent, Register, StackFrame, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use log::{info, warn, error, debug};
@@ -75,11 +75,11 @@ pub struct KatoriApp {
     syntax_set: syntect::parsing::SyntaxSet,
     
     /// Event communication
-    event_receiver: std::sync::mpsc::Receiver<DebugEvent>,
-    event_sender: std::sync::mpsc::Sender<DebugEvent>,
+    event_receiver: tokio::sync::mpsc::UnboundedReceiver<DebugEvent>,
+    event_sender: tokio::sync::mpsc::UnboundedSender<DebugEvent>,
     
     /// Command channel for async GDB operations from GUI
-    command_sender: std::sync::mpsc::Sender<GdbCommand>,
+    command_sender: tokio::sync::mpsc::UnboundedSender<GdbCommand>,
     
     /// Debug session state
     is_debugging: bool,
@@ -124,15 +124,16 @@ pub enum AttachMode {
 
 impl KatoriApp {
     pub fn new(cc: &CreationContext) -> Self {
-        let gdb_adapter = Arc::new(Mutex::new(GdbAdapter::new()));
-        let (event_sender, event_receiver) = std::sync::mpsc::channel();
-        let (command_sender, command_receiver) = std::sync::mpsc::channel();
+        let (gdb_adapter, gdb_event_receiver) = GdbAdapter::new();
+        let gdb_adapter = Arc::new(Mutex::new(gdb_adapter));
+        let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (command_sender, command_receiver) = tokio::sync::mpsc::unbounded_channel();
         
         // Start the background command processor
         let adapter_clone = gdb_adapter.clone();
         let event_sender_clone = event_sender.clone();
         let ctx = cc.egui_ctx.clone();
-        tokio::spawn(Self::command_processor_task(ctx, adapter_clone, command_receiver, event_sender_clone));
+        tokio::spawn(Self::command_processor_task(ctx, adapter_clone, command_receiver, event_sender_clone, gdb_event_receiver));
 
         // Create syntax set
 
@@ -181,56 +182,77 @@ impl KatoriApp {
     async fn command_processor_task(
         ctx: egui::Context,
         gdb_adapter: Arc<Mutex<GdbAdapter>>,
-        command_receiver: std::sync::mpsc::Receiver<GdbCommand>,
-        event_sender: std::sync::mpsc::Sender<DebugEvent>,
+        mut command_receiver: tokio::sync::mpsc::UnboundedReceiver<GdbCommand>,
+        event_sender: tokio::sync::mpsc::UnboundedSender<DebugEvent>,
+        mut gdb_event_receiver: tokio::sync::mpsc::UnboundedReceiver<GdbEvent>,
     ) {
         info!("Command processor task started");
         
         loop {
-            // Use a blocking receiver in a tokio thread to avoid busy waiting
-            match command_receiver.recv() {
-                Ok(command) => {
-                    log::debug!("Command processor received command: {:?}", command);
-                    
-                    // Process the command with timeout
-                    let result = tokio::time::timeout(
-                        Self::get_command_timeout(&command),
-                        Self::process_command(gdb_adapter.clone(), command.clone(), event_sender.clone())
-                    ).await;
-                    
-                    match result {
-                        Ok(Ok(())) => {
-                            info!("Command completed successfully: {command:?}");
-                            let _ = event_sender.send(DebugEvent::CommandCompleted(command.clone()));
+            tokio::select! {
+                // Wait for commands from the UI
+                command = command_receiver.recv() => {
+                    if let Some(command) = command {
+                        log::debug!("Command processor received command: {:?}", command);
+
+                        // Process the command with timeout
+                        let result = tokio::time::timeout(
+                            Self::get_command_timeout(&command),
+                            Self::process_command(gdb_adapter.clone(), command.clone(), event_sender.clone())
+                        ).await;
+                            
+                        match result {
+                            Ok(Ok(())) => {
+                                info!("Command completed successfully: {command:?}");
+                                let _ = event_sender.send(DebugEvent::CommandCompleted(command.clone()));
+                            }
+                            Ok(Err(error)) => {
+                                error!("Command failed: {command:?} - {error}");
+                                let _ = event_sender.send(DebugEvent::CommandFailed(command, error));
+                            }
+                            Err(_) => {
+                                error!("Command timed out: {command:?}");
+                                let _ = event_sender.send(DebugEvent::CommandFailed(
+                                    command, 
+                                    "Command timed out".to_string()
+                                ));
+                            }
                         }
-                        Ok(Err(error)) => {
-                            error!("Command failed: {command:?} - {error}");
-                            let _ = event_sender.send(DebugEvent::CommandFailed(command, error));
-                        }
-                        Err(_) => {
-                            error!("Command timed out: {command:?}");
-                            let _ = event_sender.send(DebugEvent::CommandFailed(
-                                command, 
-                                "Command timed out".to_string()
-                            ));
-                        }
+                    } else {
+                        // Channel closed, exit the task
+                        info!("Command processor task shutting down - command channel closed");
+                        break;
                     }
                 }
-                Err(_) => {
-                    // Channel closed, exit the task
-                    info!("Command processor task shutting down - channel closed");
-                    break;
+                
+                // Wait for GDB events - now using direct async receive!
+                gdb_event = gdb_event_receiver.recv() => {
+                    if let Some(event) = gdb_event {
+                        log::debug!("Command processor task received GDB event: {event:?}");
+                        // Handle the GDB event (e.g., update UI)
+                        if let GdbEvent::Async(record) = event {
+                            log::debug!("Processing async record: {:?}", record);
+                            match record.class {
+                                AsyncClass::Stopped => {
+                                    // Update target state to Stopped
+                                    let _ = event_sender.send(DebugEvent::TargetStateChanged(TargetState::Stopped));
+                                }
+                                _ => {
+                                    // Handle other async classes as needed
+                                    log::debug!("Unhandled async class: {:?}", record.class);
+                                }
+                            }
+                        }
+                    } else {
+                        // GDB event channel closed
+                        info!("Command processor task shutting down - GDB event channel closed");
+                        break;
+                    }
                 }
             }
-
-            while let Ok(event) = gdb_adapter.lock().await.get_event_receiver().lock().unwrap().try_recv() {
-                log::debug!("Command processor task received GDB event: {event:?}");
-                // Handle the GDB event (e.g., update UI)
-                if let GdbEvent::Async(record) = event {
-                    log::debug!("Processing async record: {:?}", record);
-                }
-            }
-            ctx.request_repaint(); // Request repaint to update UI with new events
+            
+            // Request repaint to update UI with new events
+            ctx.request_repaint();
         }
     }
     
@@ -252,7 +274,7 @@ impl KatoriApp {
     async fn process_command(
         gdb_adapter: Arc<Mutex<GdbAdapter>>,
         command: GdbCommand,
-        event_sender: std::sync::mpsc::Sender<DebugEvent>,
+        event_sender: tokio::sync::mpsc::UnboundedSender<DebugEvent>,
     ) -> Result<(), String> {
         let mut adapter = gdb_adapter.lock().await;
         log::debug!("Processing command: {:?}", command);
@@ -365,7 +387,7 @@ impl KatoriApp {
     /// Internal helper to send debug info refresh events
     async fn send_refresh_debug_info_internal(
         mut adapter: tokio::sync::MutexGuard<'_, GdbAdapter>,
-        event_sender: std::sync::mpsc::Sender<DebugEvent>,
+        event_sender: tokio::sync::mpsc::UnboundedSender<DebugEvent>,
     ) -> Result<(), String> {
         // Get register names first, then register values
         let mut register_names = Vec::new();
@@ -923,14 +945,11 @@ impl eframe::App for KatoriApp {
                             self.console_output.push_str("Target is now running\n");
                         }
                         GdbCommand::StepOver | GdbCommand::StepInto | GdbCommand::StepOut => {
-                            self.target_state = TargetState::Stopped;
+                            // self.target_state = TargetState::Stopped;
                             self.console_output.push_str("Step completed\n");
-                            self.auto_refresh_debug_info();
                         }
                         GdbCommand::Interrupt => {
-                            self.target_state = TargetState::Stopped;
                             self.console_output.push_str("Target interrupted\n");
-                            self.auto_refresh_debug_info();
                         }
                         _ => {}
                     }

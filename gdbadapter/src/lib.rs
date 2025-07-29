@@ -39,30 +39,30 @@ pub struct GdbAdapter {
     process: Option<Child>,
     stdin: Option<ChildStdin>,
     event_sender: mpsc::UnboundedSender<GdbEvent>,
-    event_receiver: Arc<Mutex<mpsc::UnboundedReceiver<GdbEvent>>>,
     token_counter: AtomicU32,
     pending_commands: Arc<Mutex<HashMap<u32, oneshot::Sender<GdbResult>>>>,
     is_running: Arc<Mutex<bool>>,
 }
 
 impl GdbAdapter {
-    /// Create a new GDB adapter instance
-    pub fn new() -> Self {
+    /// Create a new GDB adapter instance - returns (adapter, event_receiver)
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<GdbEvent>) {
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         
         // Install custom Ctrl+C handler on Windows to prevent self-termination
         #[cfg(windows)]
         Self::install_ctrl_handler();
         
-        GdbAdapter {
+        let adapter = GdbAdapter {
             process: None,
             stdin: None,
             event_sender,
-            event_receiver: Arc::new(Mutex::new(event_receiver)),
             token_counter: AtomicU32::new(1),
             pending_commands: Arc::new(Mutex::new(HashMap::new())),
             is_running: Arc::new(Mutex::new(false)),
-        }
+        };
+        
+        (adapter, event_receiver)
     }
     
     #[cfg(windows)]
@@ -305,10 +305,6 @@ impl GdbAdapter {
             }
         } 
         result
-    }
-
-    pub fn get_event_receiver(&self) -> Arc<Mutex<mpsc::UnboundedReceiver<GdbEvent>>> {
-        self.event_receiver.clone()
     }
     
     /// Stop the current GDB session
