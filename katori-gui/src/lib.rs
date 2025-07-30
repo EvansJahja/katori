@@ -1,4 +1,5 @@
 use eframe::{egui, CreationContext};
+use egui_extras::Column;
 use gdbadapter::{AssemblyLine, AsyncClass, GdbAdapter, GdbEvent, Register, StackFrame, Value};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -51,7 +52,7 @@ enum DebugEvent {
     AttachSuccess(Option<u32>), // PID for process attach, None for gdbserver
     AttachFailed(String),
     DetachSuccess,
-    MemoryRead(Vec<u8>),
+    MemoryRead(MemoryReadResult),
     MemoryReadFailed(String),
     // Command completion events
     CommandCompleted(GdbCommand),
@@ -109,7 +110,7 @@ pub struct KatoriApp {
     /// Memory viewer state
     memory_address: String,
     memory_size: u32,
-    memory_data: Vec<u8>,
+    memory_data: Option<MemoryReadResult>,
     
     /// Input fields
     breakpoint_input: String,
@@ -172,7 +173,7 @@ impl KatoriApp {
             show_console: true,
             memory_address: "0x0".to_string(),
             memory_size: 256,
-            memory_data: Vec::new(),
+            memory_data: None,
             breakpoint_input: String::new(),
             pid_input: String::new(),
         }
@@ -323,11 +324,14 @@ impl KatoriApp {
                         info!("Memory read command completed: {result:?}");
                         // Try to extract memory data from the result
                         // The data-read-memory-bytes command typically returns memory data in the results
-                        if let Some(_memory_value) = result.results.get("memory") {
-                            // For now, send the raw result - we'll need to parse this properly later
-                            // TODO: Parse memory data properly from GDB MI format
-                            let dummy_data = vec![0u8; size as usize]; // Placeholder
-                            let _ = event_sender.send(DebugEvent::MemoryRead(dummy_data));
+                        if let Some(memory_value) = result.results.get("memory") {
+                            if let Some(memory_result) = parse_memory(memory_value) {
+                                // Send the parsed memory data
+                                let _ = event_sender.send(DebugEvent::MemoryRead(memory_result));
+                            } else {
+                                error!("Failed to parse memory data from response");
+                                let _ = event_sender.send(DebugEvent::MemoryReadFailed("Failed to parse memory data".to_string()));
+                            }
                         } else {
                             let _ = event_sender.send(DebugEvent::MemoryReadFailed("No memory data in response".to_string()));
                         }
@@ -927,9 +931,9 @@ impl eframe::App for KatoriApp {
                     self.console_output.push_str("Successfully detached\n");
                 }
                 DebugEvent::MemoryRead(data) => {
-                    self.memory_data = data.clone();
-                    self.console_output.push_str(&format!("Memory read successfully: {} bytes\n", data.len()));
-                    info!("Event: Memory read completed: {} bytes", data.len());
+                    self.memory_data = Some(data);
+                    // self.console_output.push_str(&format!("Memory read successfully: {} bytes\n", data.contents.len()));
+                    info!("Event: Memory read completed");
                 }
                 DebugEvent::MemoryReadFailed(error) => {
                     self.console_output.push_str(&format!("Memory read failed: {error}\n"));
@@ -1229,24 +1233,39 @@ impl eframe::App for KatoriApp {
                     egui::ScrollArea::vertical()
                         .id_salt("memory_scroll")
                         .show(ui, |ui| {
-                            if self.memory_data.is_empty() {
+                            if self.memory_data.is_none() {
                                 ui.label("No memory data");
                             } else {
-                                for (i, chunk) in self.memory_data.chunks(16).enumerate() {
-                                    let mut hex_str = String::new();
-                                    let mut ascii_str = String::new();
-                                    
-                                    for byte in chunk {
-                                        hex_str.push_str(&format!("{byte:02x} "));
-                                        if byte.is_ascii_graphic() {
-                                            ascii_str.push(*byte as char);
-                                        } else {
-                                            ascii_str.push('.');
-                                        }
-                                    }
-                                    
-                                    ui.monospace(format!("{:08x}: {:<48} {}", i * 16, hex_str, ascii_str));
-                                }
+                                let data = self.memory_data.as_ref().unwrap();
+                                egui_extras::TableBuilder::new(ui)
+                                    .striped(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .id_salt("memory_table")
+                                    .column(Column::auto())
+                                    .column(Column::remainder())
+                                    .header(20.0, |mut header| {
+                                        header.col(|ui| { ui.label("Offset");});
+                                        header.col(|ui| { ui.label("Contents");});
+                                    })
+                                    .body(|mut body|{
+                                        let first_data_offset = u32::from_str_radix(&data.begin.trim_start_matches("0x"), 16).unwrap();
+                                        let contents: Vec<String> = data.contents
+                                            .chars()
+                                            .collect::<Vec<_>>()
+                                            .chunks(16 * 2)
+                                            .map(|chunk| chunk.iter().collect::<String>())
+                                            .collect();
+
+                                        body.rows(20.0, contents.len(), |mut row| {
+                                            let i = row.index();
+
+                                            row.col(|ui| {ui.label(format!("{:08X}", first_data_offset + (i as u32) * 16)); });
+                                            row.col(|ui| {
+                                                ui.monospace(&contents[i]);
+                                            });
+                                        });
+                                    })
+                                    ;
                             }
                         });
                 });
@@ -1310,4 +1329,40 @@ impl KatoriApp {
 
     }
 
+}
+
+#[derive(Debug)]
+struct MemoryReadResult {
+    offset: String,
+    begin: String,
+    end: String,
+    contents: String,
+}
+
+fn parse_memory(value: &Value) -> Option<MemoryReadResult> {
+
+    let mut offset: Option<String> = None;
+    let mut begin: Option<String> = None;
+    let mut end: Option<String> = None;
+    let mut contents: Option<String> = None;
+
+    let memory_list = value.as_list()?;
+    let first_item = memory_list.get(0)?;
+    let memory_tuple = first_item.as_tuple()?;
+    for (key, val) in memory_tuple.iter() {
+        match key.as_str() {
+            "offset" => offset = val.as_string().map(|s| s.to_string()),
+            "begin" => begin = val.as_string().map(|s| s.to_string()),
+            "end" => end = val.as_string().map(|s| s.to_string()),
+            "contents" => contents = val.as_string().map(|s| s.to_string()),
+            _ => {}
+        }
+    }
+
+    Some(MemoryReadResult {
+        offset: offset?,
+        begin: begin?,
+        end: end?,
+        contents: contents?,
+    })
 }

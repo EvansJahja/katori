@@ -9,7 +9,7 @@ async fn main() {
         .with_module_level("syntect", log::LevelFilter::Debug)
         .with_module_level("eframe", log::LevelFilter::Warn)
         .with_module_level("egui_glow", log::LevelFilter::Warn)
-        .with_module_level("gdbadapter", log::LevelFilter::Debug)
+        .with_module_level("gdbadapter", log::LevelFilter::Trace)
         .init()
         .unwrap();
     
