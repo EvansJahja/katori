@@ -1,6 +1,7 @@
 use eframe::{egui, CreationContext};
 use egui_extras::Column;
 use gdbadapter::{AssemblyLine, AsyncClass, GdbAdapter, GdbEvent, Register, StackFrame, Value};
+use syntect::parsing::{SyntaxDefinition, SyntaxReference, SyntaxSet, SyntaxSetBuilder};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use log::{info, warn, error, debug};
@@ -138,9 +139,11 @@ impl KatoriApp {
 
         // Create syntax set
 
+        let s = include_str!("../syntax/arm.sublime-syntax");
         let mut builder = syntect::parsing::SyntaxSetBuilder::new();
+        let arm_syntax = SyntaxDefinition::load_from_str(s, true, None).unwrap();
+        builder.add(arm_syntax);
 
-        builder.add_from_folder("syntax", true).unwrap();
         let ps = builder.build();
 
         for syntax in ps.syntaxes() {
