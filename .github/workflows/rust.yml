@@ -38,12 +38,10 @@ jobs:
           
     - name: Build release
       run: |
-        cd katori
         cargo build --release --verbose
         
     - name: Run tests
       run: |
-        cd katori
         cargo test --release --verbose
         
     - name: Create output directory
