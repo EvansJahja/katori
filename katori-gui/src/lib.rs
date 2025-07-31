@@ -448,7 +448,7 @@ impl KatoriApp {
         
         // Get assembly around current PC
         debug!("send_refresh_debug_info_internal: Getting assembly...");
-        match adapter.disassemble_current(20).await {
+        match adapter.disassemble_current(80).await {
             Ok(result) => {
                 if let Some(assembly_lines) = Self::parse_assembly(&result) {
                     let _ = event_sender.send(DebugEvent::AssemblyUpdated(assembly_lines));
