@@ -36,19 +36,14 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
           
-    - name: Install dependencies
-      run: |
-        # Install any system dependencies if needed
-        # For egui applications, you might need additional libraries
-        
     - name: Build release
       run: |
-        cd katori-gui
+        cd katori
         cargo build --release --verbose
         
     - name: Run tests
       run: |
-        cd katori-gui
+        cd katori
         cargo test --release --verbose
         
     - name: Create output directory
@@ -56,19 +51,12 @@ jobs:
       
     - name: Copy executable
       run: |
-        copy "katori-gui\target\release\katori-gui.exe" "artifacts\katori-gui.exe"
-        
-    - name: Copy syntax files (if needed)
-      run: |
-        # Copy syntax highlighting files if they exist
-        if (Test-Path "katori-gui\syntax") {
-          Copy-Item -Recurse "katori-gui\syntax" "artifacts\syntax"
-        }
+        copy "target\release\katori.exe" "artifacts\katori.exe"
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: katori-gui-windows-x64
+        name: katori-windows-x64
         path: artifacts/
         retention-days: 30
         
@@ -78,7 +66,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          artifacts/katori-gui.exe
+          artifacts/katori.exe
         draft: false
         prerelease: false
       env:
