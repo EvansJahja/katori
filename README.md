@@ -2,7 +2,7 @@
 
 A modern GDB frontend written in Rust with a modular architecture.
 
-## Features
+![screenshot](docs/screenshot_1.PNG)
 
 - **Native Desktop GUI**: Built with egui/eframe for cross-platform compatibility
 - **Modular Architecture**: Separate packages for GUI and GDB adapter
@@ -10,11 +10,16 @@ A modern GDB frontend written in Rust with a modular architecture.
 - **Async Architecture**: Non-blocking GDB communication
 - **Comprehensive Testing**: Unit and integration tests for reliability
 
+## STATUS: [WIP] Work in Progress
+
+Under heavy development. The project is not yet ready for production use. Not accepting Issues or PRs at this time.
+
+
 ## Project Structure
 
 - `katori` - Main workspace and entry point
 - `katori-gui` - GUI frontend using egui/eframe
-- `gdbadapter` - GDB/MI protocol adapter (can be extracted as standalone crate)
+- `gdbadapter` - GDB/MI protocol adapter (can be extracted as standalone crate later)
 
 ## Quick Start
 
