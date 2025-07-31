@@ -1149,6 +1149,7 @@ impl eframe::App for KatoriApp {
             egui::SidePanel::right("debug_sidebar")
                 .min_width(250.0)
                 .default_width(300.0)
+                .max_width(500.0)
                 .resizable(true)
                 .show(ctx, |ui| {
                     // Registers panel (top half of sidebar)
@@ -1165,7 +1166,7 @@ impl eframe::App for KatoriApp {
                             egui::Vec2::new(ui.available_width(), available_height),
                             egui::Layout::top_down(egui::Align::LEFT),
                             |ui| {
-                                egui::ScrollArea::vertical()
+                                egui::ScrollArea::both()
                                     .id_salt("registers_scroll")
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
@@ -1191,7 +1192,7 @@ impl eframe::App for KatoriApp {
                     // Stack frames panel (bottom half of sidebar)
                     if self.show_stack {
                         ui.heading("Stack Frames");
-                        egui::ScrollArea::vertical()
+                        egui::ScrollArea::both()
                             .id_salt("stack_scroll")
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
