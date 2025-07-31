@@ -1,0 +1,85 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+        
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
+    - name: Install dependencies
+      run: |
+        # Install any system dependencies if needed
+        # For egui applications, you might need additional libraries
+        
+    - name: Build release
+      run: |
+        cd katori-gui
+        cargo build --release --verbose
+        
+    - name: Run tests
+      run: |
+        cd katori-gui
+        cargo test --release --verbose
+        
+    - name: Create output directory
+      run: mkdir -p artifacts
+      
+    - name: Copy executable
+      run: |
+        copy "katori-gui\target\release\katori-gui.exe" "artifacts\katori-gui.exe"
+        
+    - name: Copy syntax files (if needed)
+      run: |
+        # Copy syntax highlighting files if they exist
+        if (Test-Path "katori-gui\syntax") {
+          Copy-Item -Recurse "katori-gui\syntax" "artifacts\syntax"
+        }
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: katori-gui-windows-x64
+        path: artifacts/
+        retention-days: 30
+        
+    # Optional: Create release if this is a tag
+    - name: Create Release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/katori-gui.exe
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
